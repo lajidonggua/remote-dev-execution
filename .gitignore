@@ -1,0 +1,4 @@
+.DS_Store
+.dev-exec.env*
+!assets/.dev-exec.env.example
+*.local

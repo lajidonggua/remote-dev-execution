@@ -1,0 +1,171 @@
+#!/bin/sh
+
+set -u
+
+usage() {
+  cat <<'EOF'
+Usage:
+  dev-exec -- command [arg ...]
+  dev-exec 'shell command with pipes or redirections'
+
+Finds .dev-exec.env from the current directory upward, optionally flushes
+the configured Mutagen session, and runs the command over SSH.
+EOF
+}
+
+fail() {
+  printf 'dev-exec: %s\n' "$*" >&2
+  exit 64
+}
+
+find_config() {
+  search_dir=$(pwd -P 2>/dev/null) || return 1
+
+  while :; do
+    candidate=$search_dir/.dev-exec.env
+    if [ -f "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+
+    [ "$search_dir" = / ] && return 1
+    search_dir=${search_dir%/*}
+    [ -n "$search_dir" ] || search_dir=/
+  done
+}
+
+shell_quote() {
+  escaped=$(printf '%s_' "$1" | sed "s/'/'\\\\''/g") || return 1
+  escaped=${escaped%_}
+  printf "'%s'" "$escaped"
+}
+
+argument_mode=0
+case ${1-} in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  --)
+    argument_mode=1
+    shift
+    ;;
+esac
+
+[ "$#" -gt 0 ] || {
+  usage >&2
+  exit 64
+}
+
+# Explicit process environment values override project defaults.
+saved_host_set=0
+saved_dir_set=0
+saved_shell_set=0
+saved_session_set=0
+saved_mutagen_bin_set=0
+
+if [ "${DEV_EXEC_HOST+x}" = x ]; then
+  saved_host_set=1
+  saved_host=$DEV_EXEC_HOST
+fi
+if [ "${DEV_EXEC_DIR+x}" = x ]; then
+  saved_dir_set=1
+  saved_dir=$DEV_EXEC_DIR
+fi
+if [ "${DEV_EXEC_SHELL+x}" = x ]; then
+  saved_shell_set=1
+  saved_shell=$DEV_EXEC_SHELL
+fi
+if [ "${DEV_EXEC_MUTAGEN_SESSION+x}" = x ]; then
+  saved_session_set=1
+  saved_session=$DEV_EXEC_MUTAGEN_SESSION
+fi
+if [ "${DEV_EXEC_MUTAGEN_BIN+x}" = x ]; then
+  saved_mutagen_bin_set=1
+  saved_mutagen_bin=$DEV_EXEC_MUTAGEN_BIN
+fi
+
+config_file=$(find_config) || config_file=
+if [ -n "$config_file" ]; then
+  # The project config is trusted shell syntax; see references/configuration.md.
+  # shellcheck disable=SC1090
+  . "$config_file"
+  config_status=$?
+  if [ "$config_status" -ne 0 ]; then
+    printf 'dev-exec: failed to load %s\n' "$config_file" >&2
+    exit "$config_status"
+  fi
+fi
+
+if [ "$saved_host_set" -eq 1 ]; then
+  DEV_EXEC_HOST=$saved_host
+fi
+if [ "$saved_dir_set" -eq 1 ]; then
+  DEV_EXEC_DIR=$saved_dir
+fi
+if [ "$saved_shell_set" -eq 1 ]; then
+  DEV_EXEC_SHELL=$saved_shell
+fi
+if [ "$saved_session_set" -eq 1 ] && [ -n "$saved_session" ]; then
+  DEV_EXEC_MUTAGEN_SESSION=$saved_session
+fi
+if [ "$saved_mutagen_bin_set" -eq 1 ]; then
+  DEV_EXEC_MUTAGEN_BIN=$saved_mutagen_bin
+fi
+
+[ -n "${DEV_EXEC_HOST:-}" ] ||
+  fail 'DEV_EXEC_HOST is required in .dev-exec.env or the process environment'
+[ -n "${DEV_EXEC_DIR:-}" ] ||
+  fail 'DEV_EXEC_DIR is required in .dev-exec.env or the process environment'
+
+case $DEV_EXEC_DIR in
+  /*) ;;
+  *) fail 'DEV_EXEC_DIR must be an absolute path in the authoritative environment' ;;
+esac
+
+case $DEV_EXEC_HOST in
+  -*) fail 'DEV_EXEC_HOST must not begin with a hyphen' ;;
+esac
+
+remote_shell=${DEV_EXEC_SHELL:-/bin/sh}
+
+if [ -n "${DEV_EXEC_MUTAGEN_SESSION:-}" ]; then
+  case $DEV_EXEC_MUTAGEN_SESSION in
+    -*) fail 'DEV_EXEC_MUTAGEN_SESSION must not begin with a hyphen' ;;
+  esac
+
+  mutagen_bin=${DEV_EXEC_MUTAGEN_BIN:-mutagen}
+  "$mutagen_bin" sync flush -- "$DEV_EXEC_MUTAGEN_SESSION"
+  sync_status=$?
+  [ "$sync_status" -eq 0 ] || exit "$sync_status"
+fi
+
+if [ "$argument_mode" -eq 0 ] && [ "$#" -eq 1 ]; then
+  command_text=$1
+else
+  command_text=
+  for argument do
+    if ! quoted_argument=$(shell_quote "$argument"); then
+      fail 'failed to quote a command argument'
+    fi
+    if [ -n "$command_text" ]; then
+      command_text="$command_text $quoted_argument"
+    else
+      command_text=$quoted_argument
+    fi
+  done
+fi
+
+if ! quoted_dir=$(shell_quote "$DEV_EXEC_DIR"); then
+  fail 'failed to quote DEV_EXEC_DIR'
+fi
+if ! quoted_shell=$(shell_quote "$remote_shell"); then
+  fail 'failed to quote DEV_EXEC_SHELL'
+fi
+if ! quoted_command=$(shell_quote "$command_text"); then
+  fail 'failed to quote the remote command'
+fi
+remote_invocation="cd $quoted_dir && exec $quoted_shell -lc $quoted_command"
+
+ssh "$DEV_EXEC_HOST" "$remote_invocation"
+exit $?
