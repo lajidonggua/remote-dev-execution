@@ -1,4 +1,6 @@
 .DS_Store
 .dev-exec.env*
 !assets/.dev-exec.env.example
+.dev-relay.env*
+!assets/.dev-relay.env.example
 *.local

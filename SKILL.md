@@ -1,6 +1,6 @@
 ---
 name: remote-dev-execution
-description: Route environment-dependent development commands through the bundled dev-exec wrapper when source work happens in a VM, remote workspace, container, or other secondary environment but the authoritative build, test, runtime, Docker, services, platform SDKs, or dependencies live on an SSH-accessible development machine. Use for remote validation or debugging and for setting up or troubleshooting .dev-exec.env, SSH path or shell execution, and optional Mutagen synchronization in this workflow. Keep lightweight source work local, dynamically choose project-appropriate commands, and run authoritative checks remotely. Do not use for generic SSH or server administration, purely local Docker or runtime troubleshooting, or projects whose current environment is authoritative and do not request remote execution.
+description: Route environment-dependent development commands through the bundled dev-exec wrapper when source work happens in a VM, remote workspace, container, or other secondary environment but the authoritative build, test, runtime, Docker, services, platform SDKs, or dependencies live on another development machine. Use for remote validation or debugging, .dev-exec.env setup, SSH path or shell failures, optional Mutagen synchronization, and non-admin macOS reverse-relay setup when the VM cannot connect inbound to the Mac. Keep lightweight source work local, dynamically choose project-appropriate commands, and run authoritative checks in the real environment. Do not use for generic SSH or server administration, public tunneling, purely local runtime troubleshooting, or projects whose current environment is already authoritative.
 ---
 
 # Remote Development Execution
@@ -11,6 +11,17 @@ Separate the environment where source is edited from the environment whose resul
 - Treat `DEV_EXEC_HOST` plus `DEV_EXEC_DIR` as the **authoritative development environment**. Run commands there when their result depends on the real platform, toolchain, dependencies, containers, services, credentials, or runtime state.
 
 Read [references/configuration.md](references/configuration.md) when configuring a project or diagnosing connection, path, shell, or synchronization problems.
+
+Read [references/reverse-relay.md](references/reverse-relay.md) when a non-admin Mac cannot enable Remote Login or accept inbound VM connections. Use the bundled `scripts/dev-relay`; do not request `sudo`, change system Remote Login, bind a public interface, or weaken host-key checking.
+
+## Establish Connectivity
+
+- Use a direct SSH alias when the editing environment can already reach the authoritative development environment.
+- Use the reverse relay when a Mac can connect outward to the VM but the VM cannot connect inbound to the Mac.
+- Run `dev-relay status` on the Mac before diagnosing `dev-exec` through a relay.
+- Use `dev-exec` for non-interactive commands with separate stdout and stderr.
+- Use direct `ssh -t` through the relay alias for an interactive shell or terminal debugger.
+- Forward debug protocol ports only when the user explicitly configures them, and bind both ends to loopback.
 
 ## Choose Commands Dynamically
 
@@ -49,6 +60,7 @@ Do not hard-code a language, framework, build system, or test command in advance
 - Never bypass a failed Mutagen flush. When synchronization fails, the wrapper does not start SSH; resolve synchronization first.
 - Do not compensate for source drift or capture generated changes by silently editing the authoritative copy over SSH.
 - Do not invent host aliases, usernames, addresses, remote paths, shell paths, or Mutagen session names. Use `.dev-exec.env`.
+- Do not invent relay ports, VM key paths, or debug ports. Use the relay config and its generated VM SSH block.
 - Preserve normal safety checks for destructive commands. Remote execution does not imply permission to make destructive or production changes.
 
 ## Interpret Results

@@ -12,6 +12,7 @@ The repository is the canonical copy. Codex and Claude consume it through user-l
 - Starts commands in the configured remote project directory and shell.
 - Streams stdout and stderr unchanged and returns the command's SSH exit status.
 - Guides an AI agent to choose validation and debugging commands from the project's own instructions and build metadata.
+- Supports a non-admin macOS reverse relay when a VM cannot connect inbound to the Mac.
 
 When Mutagen is not configured, the user or agent must confirm that the remote path is a shared checkout or is synchronized by another mechanism. The wrapper cannot infer source freshness.
 
@@ -64,6 +65,18 @@ Use one quoted string without `--` for pipelines, redirections, expansions, or o
 ```
 
 The wrapper searches for `.dev-exec.env` relative to the current working directory, not relative to the Skill repository.
+
+## Non-Admin Mac Relay
+
+When macOS Remote Login cannot be enabled, run a loopback-only user sshd and let the Mac initiate a reverse SSH tunnel to the VM:
+
+```sh
+~/code/remote-dev-execution/scripts/dev-relay init VM_PUBLIC_KEY_FILE
+~/code/remote-dev-execution/scripts/dev-relay start
+~/code/remote-dev-execution/scripts/dev-relay status
+```
+
+This does not require `sudo`, port 22, firewall changes, or an inbound Mac address. It uses dedicated keys and strict host verification. See [references/reverse-relay.md](references/reverse-relay.md) for secure setup, VM configuration, interactive debugging, debug-port forwarding, lifecycle, and policy limitations.
 
 ## Update
 

@@ -1,0 +1,594 @@
+#!/bin/sh
+
+set -u
+umask 077
+
+EX_USAGE=64
+EX_CONFIG=78
+EX_UNAVAILABLE=69
+
+usage() {
+  cat <<'EOF'
+Usage:
+  dev-relay init VM_PUBLIC_KEY_FILE
+  dev-relay start
+  dev-relay foreground
+  dev-relay status
+  dev-relay stop
+  dev-relay print-vm-config [VM_PRIVATE_KEY_PATH]
+
+Run a loopback-only user sshd on macOS and expose it to an SSH-accessible VM
+through a Mac-initiated reverse tunnel. No administrator privileges required.
+
+Configuration:
+  DEV_RELAY_CONFIG, or
+  ~/.config/remote-dev-execution/relay.env
+EOF
+}
+
+fail() {
+  code=$1
+  shift
+  printf 'dev-relay: %s\n' "$*" >&2
+  exit "$code"
+}
+
+say() {
+  printf 'dev-relay: %s\n' "$*"
+}
+
+command_name=${1:-help}
+case $command_name in
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  init|start|foreground|status|stop|print-vm-config)
+    shift
+    ;;
+  *)
+    usage >&2
+    fail "$EX_USAGE" "unknown command: $command_name"
+    ;;
+esac
+
+[ -n "${HOME:-}" ] || fail "$EX_CONFIG" 'HOME is required'
+
+config_root=${XDG_CONFIG_HOME:-$HOME/.config}
+config_file=${DEV_RELAY_CONFIG:-$config_root/remote-dev-execution/relay.env}
+[ -f "$config_file" ] ||
+  fail "$EX_CONFIG" "configuration not found: $config_file"
+
+# The relay configuration is trusted shell syntax.
+# shellcheck disable=SC1090
+. "$config_file"
+config_status=$?
+[ "$config_status" -eq 0 ] ||
+  fail "$config_status" "failed to load configuration: $config_file"
+
+set -f
+
+vm_host=${DEV_RELAY_VM_HOST:-}
+local_port=${DEV_RELAY_LOCAL_PORT:-22022}
+remote_port=${DEV_RELAY_REMOTE_PORT:-22022}
+vm_alias=${DEV_RELAY_VM_ALIAS:-mac-dev-relay}
+debug_ports=${DEV_RELAY_DEBUG_PORTS:-}
+state_root=${XDG_STATE_HOME:-$HOME/.local/state}
+state_dir=${DEV_RELAY_STATE_DIR:-$state_root/remote-dev-execution/relay}
+user_id=$(id -u) || fail "$EX_UNAVAILABLE" 'cannot determine the current user id'
+runtime_root=${TMPDIR:-/tmp}
+runtime_dir=${DEV_RELAY_RUNTIME_DIR:-${runtime_root%/}/rde-$user_id}
+ssh_bin=${DEV_RELAY_SSH_BIN:-/usr/bin/ssh}
+sshd_bin=${DEV_RELAY_SSHD_BIN:-/usr/sbin/sshd}
+ssh_keygen_bin=${DEV_RELAY_SSH_KEYGEN_BIN:-/usr/bin/ssh-keygen}
+outer_ssh_config=${DEV_RELAY_OUTER_SSH_CONFIG:-}
+
+[ -n "$vm_host" ] || fail "$EX_CONFIG" 'DEV_RELAY_VM_HOST is required'
+case $vm_host in
+  -*) fail "$EX_CONFIG" 'DEV_RELAY_VM_HOST must not begin with a hyphen' ;;
+  *'
+'*) fail "$EX_CONFIG" 'DEV_RELAY_VM_HOST must not contain a newline' ;;
+esac
+
+case $vm_alias in
+  ''|*[!A-Za-z0-9._-]*)
+    fail "$EX_CONFIG" 'DEV_RELAY_VM_ALIAS may contain only letters, digits, dots, underscores, and hyphens'
+    ;;
+esac
+
+case $state_dir in
+  "$HOME"/*) ;;
+  *) fail "$EX_CONFIG" 'DEV_RELAY_STATE_DIR must be an absolute path below HOME' ;;
+esac
+
+case $runtime_dir in
+  /*) ;;
+  *) fail "$EX_CONFIG" 'DEV_RELAY_RUNTIME_DIR must be an absolute path' ;;
+esac
+case $runtime_dir in
+  *'
+'*) fail "$EX_CONFIG" 'DEV_RELAY_RUNTIME_DIR must not contain a newline' ;;
+esac
+case $state_dir in
+  *'
+'*) fail "$EX_CONFIG" 'DEV_RELAY_STATE_DIR must not contain a newline' ;;
+esac
+
+[ -x "$ssh_bin" ] || fail "$EX_CONFIG" "SSH executable not found: $ssh_bin"
+[ -x "$sshd_bin" ] || fail "$EX_CONFIG" "sshd executable not found: $sshd_bin"
+[ -x "$ssh_keygen_bin" ] ||
+  fail "$EX_CONFIG" "ssh-keygen executable not found: $ssh_keygen_bin"
+
+if [ -n "$outer_ssh_config" ] && [ ! -r "$outer_ssh_config" ]; then
+  fail "$EX_CONFIG" "outer SSH config is not readable: $outer_ssh_config"
+fi
+
+validate_port() {
+  port_name=$1
+  port_value=$2
+  case $port_value in
+    ''|*[!0-9]*)
+      fail "$EX_CONFIG" "$port_name must be an integer from 1024 to 65535"
+      ;;
+  esac
+  if [ "$port_value" -lt 1024 ] || [ "$port_value" -gt 65535 ]; then
+    fail "$EX_CONFIG" "$port_name must be an integer from 1024 to 65535"
+  fi
+}
+
+validate_port DEV_RELAY_LOCAL_PORT "$local_port"
+validate_port DEV_RELAY_REMOTE_PORT "$remote_port"
+
+seen_debug_ports=" $remote_port "
+for debug_port in $debug_ports; do
+  validate_port DEV_RELAY_DEBUG_PORTS "$debug_port"
+  if [ "$debug_port" -eq "$local_port" ]; then
+    fail "$EX_CONFIG" "debug port $debug_port conflicts with DEV_RELAY_LOCAL_PORT"
+  fi
+  case $seen_debug_ports in
+    *" $debug_port "*)
+      fail "$EX_CONFIG" "duplicate or conflicting remote port: $debug_port"
+      ;;
+  esac
+  seen_debug_ports="$seen_debug_ports$debug_port "
+done
+
+host_key=$state_dir/ssh_host_ed25519_key
+host_public_key=$host_key.pub
+authorized_keys=$state_dir/authorized_keys
+sshd_config=$state_dir/sshd_config
+sshd_pid=$state_dir/sshd.pid
+sshd_log=$state_dir/sshd.log
+control_socket=$runtime_dir/r-$remote_port.ctl
+
+if [ "${#control_socket}" -gt 90 ]; then
+  fail "$EX_CONFIG" 'DEV_RELAY_RUNTIME_DIR is too long for an SSH control socket'
+fi
+
+script_dir=$(CDPATH= cd -P "$(dirname "$0")" 2>/dev/null && pwd) ||
+  fail "$EX_UNAVAILABLE" 'cannot resolve the dev-relay script directory'
+script_path=$script_dir/$(basename "$0")
+
+ensure_state_dir() {
+  if [ -L "$state_dir" ]; then
+    fail "$EX_UNAVAILABLE" "state directory must not be a symlink: $state_dir"
+  fi
+  mkdir -p "$state_dir" ||
+    fail "$EX_UNAVAILABLE" "cannot create state directory: $state_dir"
+  state_owner=$(stat -f '%u' "$state_dir" 2>/dev/null) ||
+    fail "$EX_UNAVAILABLE" "cannot inspect state directory ownership: $state_dir"
+  [ "$state_owner" = "$user_id" ] ||
+    fail "$EX_UNAVAILABLE" "state directory is not owned by uid $user_id"
+  chmod 0700 "$state_dir" ||
+    fail "$EX_UNAVAILABLE" "cannot secure state directory: $state_dir"
+}
+
+ensure_runtime_dir() {
+  if [ -L "$runtime_dir" ]; then
+    fail "$EX_UNAVAILABLE" "runtime directory must not be a symlink: $runtime_dir"
+  fi
+  mkdir -p "$runtime_dir" ||
+    fail "$EX_UNAVAILABLE" "cannot create runtime directory: $runtime_dir"
+  runtime_owner=$(stat -f '%u' "$runtime_dir" 2>/dev/null) ||
+    fail "$EX_UNAVAILABLE" "cannot inspect runtime directory ownership: $runtime_dir"
+  [ "$runtime_owner" = "$user_id" ] ||
+    fail "$EX_UNAVAILABLE" "runtime directory is not owned by uid $user_id"
+  chmod 0700 "$runtime_dir" ||
+    fail "$EX_UNAVAILABLE" "cannot secure runtime directory: $runtime_dir"
+}
+
+ensure_initialized() {
+  [ -f "$host_key" ] ||
+    fail "$EX_CONFIG" "relay is not initialized; run: $script_path init VM_PUBLIC_KEY_FILE"
+  [ -f "$authorized_keys" ] ||
+    fail "$EX_CONFIG" "authorized keys are missing; rerun dev-relay init"
+  [ -f "$sshd_config" ] ||
+    fail "$EX_CONFIG" "sshd configuration is missing; rerun dev-relay init"
+}
+
+sshd_quote() {
+  escaped=$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g') || return 1
+  printf '"%s"' "$escaped"
+}
+
+write_sshd_config() {
+  config_tmp=$state_dir/sshd_config.tmp
+  user_name=$(id -un) ||
+    fail "$EX_UNAVAILABLE" 'cannot determine the current user'
+  case $user_name in
+    ''|*[!A-Za-z0-9._-]*)
+      fail "$EX_CONFIG" 'the current username cannot be represented safely in sshd_config'
+      ;;
+  esac
+
+  if ! quoted_host_key=$(sshd_quote "$host_key"); then
+    fail "$EX_UNAVAILABLE" 'cannot quote the relay host-key path'
+  fi
+  if ! quoted_pid=$(sshd_quote "$sshd_pid"); then
+    fail "$EX_UNAVAILABLE" 'cannot quote the relay pid-file path'
+  fi
+  if ! quoted_authorized_keys=$(sshd_quote "$authorized_keys"); then
+    fail "$EX_UNAVAILABLE" 'cannot quote the relay authorized-keys path'
+  fi
+
+  {
+    printf 'Port %s\n' "$local_port"
+    printf 'ListenAddress 127.0.0.1\n'
+    printf 'AddressFamily inet\n'
+    printf 'HostKey %s\n' "$quoted_host_key"
+    printf 'PidFile %s\n' "$quoted_pid"
+    printf 'AuthorizedKeysFile %s\n' "$quoted_authorized_keys"
+    printf 'AuthenticationMethods publickey\n'
+    printf 'PubkeyAuthentication yes\n'
+    printf 'PasswordAuthentication no\n'
+    printf 'KbdInteractiveAuthentication no\n'
+    printf 'ChallengeResponseAuthentication no\n'
+    printf 'PermitEmptyPasswords no\n'
+    printf 'UsePAM no\n'
+    printf 'PermitRootLogin no\n'
+    printf 'StrictModes yes\n'
+    printf 'AllowUsers %s\n' "$user_name"
+    printf 'DisableForwarding yes\n'
+    printf 'AllowTcpForwarding no\n'
+    printf 'AllowStreamLocalForwarding no\n'
+    printf 'AllowAgentForwarding no\n'
+    printf 'GatewayPorts no\n'
+    printf 'X11Forwarding no\n'
+    printf 'PermitTunnel no\n'
+    printf 'PermitUserEnvironment no\n'
+    printf 'PermitUserRC no\n'
+    printf 'PermitTTY yes\n'
+    printf 'MaxAuthTries 3\n'
+    printf 'MaxSessions 4\n'
+    printf 'LoginGraceTime 30\n'
+    printf 'ClientAliveInterval 60\n'
+    printf 'ClientAliveCountMax 3\n'
+    printf 'UseDNS no\n'
+    printf 'PrintMotd no\n'
+    printf 'LogLevel VERBOSE\n'
+    printf 'Subsystem sftp internal-sftp\n'
+  } > "$config_tmp" ||
+    fail "$EX_UNAVAILABLE" "cannot write temporary sshd config: $config_tmp"
+
+  chmod 0600 "$config_tmp" ||
+    fail "$EX_UNAVAILABLE" "cannot secure temporary sshd config: $config_tmp"
+
+  if ! "$sshd_bin" -t -f "$config_tmp"; then
+    rm -f "$config_tmp"
+    fail "$EX_CONFIG" 'generated sshd configuration failed validation'
+  fi
+
+  mv "$config_tmp" "$sshd_config" ||
+    fail "$EX_UNAVAILABLE" "cannot install sshd config: $sshd_config"
+}
+
+read_pid() {
+  pid_file=$1
+  [ -f "$pid_file" ] || return 1
+  IFS= read -r process_pid < "$pid_file" || return 1
+  case $process_pid in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$process_pid"
+}
+
+pid_matches() {
+  process_pid=$1
+  expected_text=$2
+  kill -0 "$process_pid" 2>/dev/null || return 1
+  process_command=$(ps -p "$process_pid" -o command= 2>/dev/null) || return 1
+  case $process_command in
+    *"$expected_text"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+sshd_running() {
+  relay_sshd_pid=$(read_pid "$sshd_pid") || return 1
+  pid_matches "$relay_sshd_pid" "$sshd_config"
+}
+
+control_command() {
+  operation=$1
+  shift
+  set --
+  if [ -n "$outer_ssh_config" ]; then
+    set -- "$@" -F "$outer_ssh_config"
+  fi
+  set -- "$@" -S "$control_socket" -O "$operation" "$vm_host"
+  "$ssh_bin" "$@"
+}
+
+tunnel_running() {
+  [ -S "$control_socket" ] || return 1
+  control_command check >/dev/null 2>&1
+}
+
+start_sshd() {
+  ensure_initialized
+  ensure_state_dir
+
+  if sshd_running; then
+    return 0
+  fi
+
+  if [ -f "$sshd_pid" ]; then
+    stale_pid=$(read_pid "$sshd_pid" 2>/dev/null || true)
+    if [ -n "$stale_pid" ] && kill -0 "$stale_pid" 2>/dev/null; then
+      fail "$EX_UNAVAILABLE" "refusing to replace pid file for unrelated process $stale_pid"
+    fi
+    rm -f "$sshd_pid"
+  fi
+
+  "$sshd_bin" -t -f "$sshd_config" ||
+    fail "$EX_CONFIG" 'sshd configuration failed validation'
+  "$sshd_bin" -f "$sshd_config" -E "$sshd_log" ||
+    fail "$EX_UNAVAILABLE" "user sshd failed to start; inspect $sshd_log"
+
+  attempt=0
+  while [ "$attempt" -lt 50 ]; do
+    if sshd_running; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.1
+  done
+
+  fail "$EX_UNAVAILABLE" "user sshd did not become ready; inspect $sshd_log"
+}
+
+stop_sshd() {
+  if ! relay_sshd_pid=$(read_pid "$sshd_pid" 2>/dev/null); then
+    rm -f "$sshd_pid"
+    return 0
+  fi
+
+  if ! pid_matches "$relay_sshd_pid" "$sshd_config"; then
+    fail "$EX_UNAVAILABLE" "refusing to stop unrelated process $relay_sshd_pid"
+  fi
+
+  kill "$relay_sshd_pid" ||
+    fail "$EX_UNAVAILABLE" "cannot stop user sshd process $relay_sshd_pid"
+
+  attempt=0
+  while [ "$attempt" -lt 50 ]; do
+    if ! kill -0 "$relay_sshd_pid" 2>/dev/null; then
+      rm -f "$sshd_pid"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.1
+  done
+
+  fail "$EX_UNAVAILABLE" "user sshd process $relay_sshd_pid did not stop"
+}
+
+run_tunnel() {
+  tunnel_mode=$1
+  set --
+
+  if [ -n "$outer_ssh_config" ]; then
+    set -- "$@" -F "$outer_ssh_config"
+  fi
+
+  set -- "$@" -M -S "$control_socket"
+  if [ "$tunnel_mode" = background ]; then
+    set -- "$@" -f
+  fi
+
+  set -- "$@" -N -T
+  set -- "$@" -o BatchMode=yes
+  set -- "$@" -o ExitOnForwardFailure=yes
+  set -- "$@" -o ForwardAgent=no
+  set -- "$@" -o RequestTTY=no
+  set -- "$@" -o ServerAliveInterval=30
+  set -- "$@" -o ServerAliveCountMax=3
+  set -- "$@" -o StrictHostKeyChecking=yes
+  set -- "$@" -o ControlMaster=yes
+  set -- "$@" -o ControlPersist=no
+  set -- "$@" -R "127.0.0.1:$remote_port:127.0.0.1:$local_port"
+
+  for debug_port in $debug_ports; do
+    set -- "$@" -R "127.0.0.1:$debug_port:127.0.0.1:$debug_port"
+  done
+
+  set -- "$@" "$vm_host"
+  "$ssh_bin" "$@"
+}
+
+start_tunnel() {
+  if tunnel_running; then
+    return 0
+  fi
+
+  ensure_runtime_dir
+  rm -f "$control_socket"
+  run_tunnel background || return $?
+  tunnel_running
+}
+
+stop_tunnel() {
+  if tunnel_running; then
+    control_command exit >/dev/null 2>&1 || return $?
+  fi
+  rm -f "$control_socket"
+}
+
+initialize_relay() {
+  [ "$#" -eq 1 ] || fail "$EX_USAGE" 'init requires one VM public-key file'
+  public_key_source=$1
+  [ -r "$public_key_source" ] ||
+    fail "$EX_CONFIG" "VM public key is not readable: $public_key_source"
+
+  IFS= read -r public_key_line < "$public_key_source" ||
+    fail "$EX_CONFIG" 'VM public-key file is empty'
+  case $public_key_line in
+    ssh-ed25519\ *|sk-ssh-ed25519@openssh.com\ *) ;;
+    *) fail "$EX_CONFIG" 'use a dedicated Ed25519 VM public key, not a private key' ;;
+  esac
+  second_line=$(sed -n '2p' "$public_key_source")
+  [ -z "$second_line" ] ||
+    fail "$EX_CONFIG" 'VM public-key file must contain exactly one key'
+  "$ssh_keygen_bin" -l -f "$public_key_source" >/dev/null 2>&1 ||
+    fail "$EX_CONFIG" 'VM public-key file is invalid'
+
+  ensure_state_dir
+
+  authorized_tmp=$state_dir/authorized_keys.tmp
+  cp "$public_key_source" "$authorized_tmp" ||
+    fail "$EX_UNAVAILABLE" 'cannot copy the VM public key'
+  chmod 0600 "$authorized_tmp" ||
+    fail "$EX_UNAVAILABLE" 'cannot secure the VM public key'
+  mv "$authorized_tmp" "$authorized_keys" ||
+    fail "$EX_UNAVAILABLE" 'cannot install the VM public key'
+
+  if [ ! -f "$host_key" ]; then
+    "$ssh_keygen_bin" -q -t ed25519 -N '' -f "$host_key" ||
+      fail "$EX_UNAVAILABLE" 'cannot generate the user sshd host key'
+  fi
+  chmod 0600 "$host_key"
+  chmod 0644 "$host_public_key"
+
+  write_sshd_config
+  say "initialized user sshd state in $state_dir"
+  say "run '$script_path print-vm-config' for the VM-side SSH entries"
+}
+
+start_relay() {
+  [ "$#" -eq 0 ] || fail "$EX_USAGE" 'start does not accept arguments'
+  ensure_initialized
+
+  sshd_was_running=0
+  if sshd_running; then
+    sshd_was_running=1
+  else
+    start_sshd
+  fi
+
+  if ! start_tunnel; then
+    if [ "$sshd_was_running" -eq 0 ]; then
+      stop_sshd
+    fi
+    fail "$EX_UNAVAILABLE" "reverse tunnel failed; verify SSH access to $vm_host"
+  fi
+
+  say "ready: VM 127.0.0.1:$remote_port -> Mac 127.0.0.1:$local_port"
+  if [ -n "$debug_ports" ]; then
+    say "debug ports forwarded on VM loopback: $debug_ports"
+  fi
+}
+
+foreground_cleanup() {
+  stop_tunnel >/dev/null 2>&1 || true
+  if [ "${foreground_started_sshd:-0}" -eq 1 ]; then
+    stop_sshd >/dev/null 2>&1 || true
+  fi
+}
+
+run_foreground() {
+  [ "$#" -eq 0 ] || fail "$EX_USAGE" 'foreground does not accept arguments'
+  ensure_initialized
+  tunnel_running &&
+    fail "$EX_UNAVAILABLE" 'a background tunnel is already running; stop it first'
+
+  foreground_started_sshd=0
+  if ! sshd_running; then
+    start_sshd
+    foreground_started_sshd=1
+  fi
+
+  ensure_runtime_dir
+  rm -f "$control_socket"
+  trap 'exit 129' HUP INT TERM
+  trap 'foreground_cleanup' EXIT
+  run_tunnel foreground
+}
+
+show_status() {
+  [ "$#" -eq 0 ] || fail "$EX_USAGE" 'status does not accept arguments'
+  relay_status=0
+
+  if sshd_running; then
+    say "user sshd: running on 127.0.0.1:$local_port"
+  else
+    say 'user sshd: stopped'
+    relay_status=1
+  fi
+
+  if tunnel_running; then
+    say "reverse tunnel: connected to $vm_host"
+  else
+    say 'reverse tunnel: stopped'
+    relay_status=1
+  fi
+
+  say "log: $sshd_log"
+  return "$relay_status"
+}
+
+stop_relay() {
+  [ "$#" -eq 0 ] || fail "$EX_USAGE" 'stop does not accept arguments'
+  stop_tunnel ||
+    fail "$EX_UNAVAILABLE" 'cannot stop the reverse tunnel'
+  stop_sshd
+  say 'stopped'
+}
+
+print_vm_config() {
+  [ "$#" -le 1 ] ||
+    fail "$EX_USAGE" 'print-vm-config accepts at most one VM private-key path'
+  ensure_initialized
+  vm_identity=${1:-~/.ssh/remote-dev-mac}
+  case $vm_identity in
+    *'
+'*) fail "$EX_USAGE" 'VM private-key path must not contain a newline' ;;
+  esac
+
+  host_material=$(awk 'NR == 1 { print $1 " " $2 }' "$host_public_key")
+  [ -n "$host_material" ] ||
+    fail "$EX_CONFIG" 'relay host public key is invalid'
+
+  cat <<EOF
+# Add to the VM's ~/.ssh/config:
+Host $vm_alias
+  HostName 127.0.0.1
+  Port $remote_port
+  User $(id -un)
+  IdentityFile $vm_identity
+  IdentitiesOnly yes
+  HostKeyAlias $vm_alias
+  StrictHostKeyChecking yes
+
+# Append this exact line to the VM's ~/.ssh/known_hosts:
+$vm_alias $host_material
+EOF
+}
+
+case $command_name in
+  init) initialize_relay "$@" ;;
+  start) start_relay "$@" ;;
+  foreground) run_foreground "$@" ;;
+  status) show_status "$@" ;;
+  stop) stop_relay "$@" ;;
+  print-vm-config) print_vm_config "$@" ;;
+esac
