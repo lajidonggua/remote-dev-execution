@@ -91,6 +91,11 @@ mutagen sync flush -- SESSION
 
 It waits for completion before opening SSH. A non-zero flush status is returned immediately, so a command is never run against a knowingly stale authoritative copy.
 
+The flush runs in the same environment as `dev-exec`. If Claude or Codex runs in
+a VM, install Mutagen there and create the session there (or expose the session
+through the approved user environment). Installing Mutagen only on the
+authoritative Mac does not satisfy this preflight.
+
 ## Troubleshooting
 
 - **Configuration not found:** Run from inside the intended project tree, or export the required variables explicitly.

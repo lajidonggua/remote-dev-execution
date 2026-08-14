@@ -76,5 +76,46 @@ jobs:
           print("Codex UI metadata is valid")
           PY
 
+      - name: Validate documentation and redaction
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+
+          docs = [Path("README.md"), Path("README.zh-CN.md")]
+          link_pattern = re.compile(r"\[[^\]]+\]\(([^)#]+)(?:#[^)]+)?\)")
+          for document in docs:
+              text = document.read_text()
+              for link in link_pattern.findall(text):
+                  if re.match(r"^(?:https?|mailto):", link):
+                      continue
+                  target = (document.parent / link).resolve()
+                  if not target.exists():
+                      raise SystemExit(f"broken link in {document}: {link}")
+
+          forbidden = re.compile(
+              "|".join(
+                  [
+                      "/" + r"(?:Users|home|var/folders)/",
+                      "BEGIN " + ".*" + " PRIVATE KEY",
+                      "AKIA" + r"[0-9A-Z]{16}",
+                      "gh" + r"[pousr]_[A-Za-z0-9]+",
+                      "Bearer " + r"[A-Za-z0-9._-]+",
+                  ]
+              )
+          )
+          tracked = subprocess.check_output(["git", "ls-files", "-z"])
+          for raw_path in tracked.split(b"\0"):
+              if not raw_path:
+                  continue
+              path = Path(raw_path.decode())
+              if path in docs or path == Path(".github/workflows/validate.yml"):
+                  continue
+              if forbidden.search(path.read_text(errors="replace")):
+                  raise SystemExit(f"possible sensitive value in {path}")
+          print("Documentation links and redaction scan passed")
+          PY
+
       - name: Run wrapper and installer tests
         run: tests/test-dev-exec.sh && tests/test-install-skill.sh

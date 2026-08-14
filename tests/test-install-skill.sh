@@ -12,7 +12,7 @@ source_repo=$test_root/source
 mkdir -p "$home" "$source_repo"
 
 git -C "$source_repo" init -q
-git -C "$source_repo" config user.email test@example.invalid
+git -C "$source_repo" config user.email test.invalid
 git -C "$source_repo" config user.name 'Install Test'
 git -C "$source_repo" checkout -q -b main
 cat > "$source_repo/SKILL.md" <<'EOF'

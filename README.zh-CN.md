@@ -1,0 +1,525 @@
+# remote-dev-execution
+
+这是一个用于“AI 编辑环境”和“权威开发环境”分离场景的 Agent Skill。
+
+```text
+VM / 容器 / 其他 AI 编辑环境
+        |
+        | 在本地检查和修改源码
+        v
+dev-exec / SSH / 可选 Mutagen 同步
+        |
+        v
+Mac / 工作站 / 真实开发机（权威环境）
+        |
+        | 真实工具链、依赖、服务、容器和运行时
+        v
+权威构建、测试、调试和运行结果
+```
+
+Skill 的核心原则是：轻量的源码检查和编辑留在 AI 所在环境；依赖真实
+平台、SDK、服务、Docker、运行时或凭据的命令，交给权威开发环境执行。
+
+英文文档：[README.md](README.md)
+
+## 仓库内容
+
+- `SKILL.md`：Codex 或 Claude 激活 Skill 后读取的核心规则。
+- `scripts/dev-exec`：查找项目配置、可选刷新 Mutagen、通过 SSH 执行命令，
+  并保留 stdout、stderr 和退出码。
+- `scripts/dev-relay`：macOS 非管理员用户态 `sshd` 和由 Mac 发起的反向
+  SSH 隧道。
+- `scripts/install-skill.sh`：安全维护 canonical Git checkout，并为 Claude
+  Code 或 Codex 建立用户级软链接。
+- `references/configuration.md`：`.dev-exec.env`、变量优先级和源码新鲜度。
+- `references/reverse-relay.md`：反向 relay 的安全模型、手动配置和排错。
+- `assets/*.example`：只包含占位符的配置模板。
+
+本仓库是 Skill 的 canonical copy。不要把项目绝对路径、真实主机名、用户
+名、IP、私钥、密码、Token 或其他秘密写入仓库。
+
+## 先选择部署方式
+
+| 场景 | 推荐方式 | 是否必须 Mutagen |
+| --- | --- | --- |
+| VM 可以直接 SSH 到权威开发机，双方使用同一个共享 checkout | 直接 SSH + `.dev-exec.env` | 不需要 |
+| VM 和权威开发机是两个 checkout | 直接 SSH + 已验证的同步机制 | 通常需要；也可以使用其他可靠同步工具 |
+| 权威环境是 Mac，VM 无法主动连入 Mac | `dev-relay setup` 反向 relay | 只有两个 checkout 分离时需要 |
+| 需要交互式 shell 或终端调试器 | 直接 `ssh -t` 或 relay SSH | 不需要，但仍必须确认源码是最新的 |
+
+Mutagen 是同步工具，不是 SSH 替代品。本 Skill 只把 Mutagen 用作执行前
+置检查：`dev-exec` 调用 `mutagen sync flush`，刷新失败就不会启动 SSH。
+它不会替你决定同步冲突哪一侧优先，也不会把远程生成文件偷偷改回本地。
+
+## 前置条件
+
+### AI 环境 / VM
+
+- POSIX shell：`sh`、Bash、Zsh、Dash 或 Ksh。
+- 安装或更新 Skill 需要 Git。
+- SSH 客户端，以及指向权威环境的可用 SSH alias。
+- 项目目录中有 `.dev-exec.env`，或者进程环境中已经导出必需的
+  `DEV_EXEC_*` 变量。
+
+### 权威开发环境
+
+- 真实项目 checkout、工具链、依赖、服务、Docker、SDK 和运行时。
+- 可以通过 SSH alias 访问的 SSH server；使用反向 relay 时例外。
+- 只有在两个 checkout 需要同步时才需要 Mutagen。
+
+### 反向 relay 额外条件
+
+- macOS 存在 `/usr/sbin/sshd`、`/usr/bin/ssh` 和 `/usr/bin/ssh-keygen`。
+- Mac 可以先以非交互方式 SSH 到 VM。
+- VM 的 SSH server 允许 remote forwarding，登录 shell 是 POSIX 兼容 shell。
+- relay 使用的高位 loopback 端口没有被占用。
+
+反向 relay 不会开启 macOS Remote Login，不会绑定 22 端口，不会修改防火墙，
+不会监听公网地址，也不需要 `sudo`。
+
+## 安装 Skill
+
+Skill 必须安装在运行 Agent 的那台环境中。如果 Claude Code 在 VM 中运行，
+Mac 的 `~/.claude/skills` 对 VM 不可见；必须在 VM 中单独 clone 并建立链接。
+
+### 使用公开仓库
+
+在 VM（或其他运行 Agent 的环境）执行：
+
+```sh
+git clone https://github.com/lajidonggua/remote-dev-execution.git \
+  ~/code/remote-dev-execution
+
+~/code/remote-dev-execution/scripts/install-skill.sh \
+  --repo https://github.com/lajidonggua/remote-dev-execution.git \
+  --ref main \
+  --client claude
+```
+
+如果同一个用户环境同时运行 Claude 和 Codex：
+
+```sh
+~/code/remote-dev-execution/scripts/install-skill.sh --client both
+```
+
+默认目标分别是 Claude Code 的 `~/.claude/skills/remote-dev-execution` 和
+Codex 的 `~/.agents/skills/remote-dev-execution`，两者都会指向同一个
+canonical checkout。
+
+安装器的行为是保守且可重复的：
+
+- 只更新 `origin` 与 `--repo` 匹配且没有本地修改的 checkout。
+- `--ref` 可以指定分支、tag 或 commit。
+- 发现已有真实目录、断开的软链接或指向其他位置的链接时直接停止。
+- 不使用 `sudo`，不覆盖无关的用户文件。
+- `--no-update` 使用当前 checkout，不执行 fetch。
+- `--dry-run` 只预览动作。
+- `--root DIR` 指定 canonical checkout；`--target DIR` 指定单个客户端的链接位置。
+
+安装或更新软链接后，重新启动 Claude Code/Codex 或开启新会话，让 Agent 重新
+加载 Skill 元数据和指令。
+
+### 团队内部使用
+
+内部阶段使用团队私有仓库，并固定到经过审核的 ref：
+
+```sh
+~/code/remote-dev-execution/scripts/install-skill.sh \
+  --repo git@github.com:your-org/remote-dev-execution.git \
+  --ref team-stable \
+  --client claude
+```
+
+不要把私有 deploy key、访问 Token 或私有项目路径写入 Skill；让 Git/SSH
+自己的 credential helper 处理认证。测试阶段可以使用分支，稳定分发应使用
+commit SHA 或 release tag。
+
+## 配置项目
+
+在 VM 项目 checkout 中执行：
+
+```sh
+cp ~/code/remote-dev-execution/assets/.dev-exec.env.example .dev-exec.env
+chmod 600 .dev-exec.env
+```
+
+编辑 `.dev-exec.env`，填写权威环境的 SSH alias 和项目路径：
+
+```sh
+DEV_EXEC_HOST=dev-machine
+DEV_EXEC_DIR=/absolute/path/to/project/on/authoritative-machine
+DEV_EXEC_SHELL=/bin/zsh
+```
+
+`DEV_EXEC_DIR` 是权威开发机上的路径，不是 VM 上的路径，必须是绝对路径。
+`.dev-exec.env` 是业务项目的本地配置，不是 Skill 配置。把它加入业务仓库
+的 `.gitignore`，或者写入业务仓库的 `.git/info/exclude`。
+
+`dev-exec` 从当前工作目录向上查找最近的 `.dev-exec.env`。进程环境变量会
+覆盖配置文件值，适合临时切换 shell：
+
+```sh
+DEV_EXEC_SHELL=/bin/sh \
+  ~/code/remote-dev-execution/scripts/dev-exec -- npm test
+```
+
+变量完整说明见 [references/configuration.md](references/configuration.md)。
+
+## 直接 SSH：完整教程
+
+当 VM 可以直接访问权威开发机时，这是最简单的方案。
+
+### 1. 配置并测试 SSH alias
+
+在 VM 的 `~/.ssh/config` 中配置 alias。以下只是结构示例，必须替换为你的
+真实主机、用户和密钥：
+
+```sshconfig
+Host dev-machine
+  HostName your-development-host
+  User devuser
+  IdentityFile ~/.ssh/id_ed25519
+  IdentitiesOnly yes
+```
+
+先测试普通 SSH，不要一开始就排查 Skill：
+
+```sh
+ssh dev-machine true
+ssh dev-machine 'uname -a'
+```
+
+如果出现密码提示、host-key 错误或 alias 不存在，先修复普通 SSH。不要通过
+关闭 host-key 检查来“解决”问题。
+
+### 2. 指向权威 checkout
+
+从 VM 项目目录执行：
+
+```sh
+cat > .dev-exec.env <<'EOF'
+DEV_EXEC_HOST=dev-machine
+DEV_EXEC_DIR=/absolute/path/to/project/on/authoritative-machine
+DEV_EXEC_SHELL=/bin/zsh
+EOF
+chmod 600 .dev-exec.env
+```
+
+### 3. 执行最小的权威验证
+
+普通命令使用参数形式：
+
+```sh
+~/code/remote-dev-execution/scripts/dev-exec -- npm test -- --runInBand
+```
+
+需要管道、重定向或 shell 展开的命令，使用一个带引号的字符串：
+
+```sh
+~/code/remote-dev-execution/scripts/dev-exec \
+  'npm test -- --runInBand | tee /tmp/project-test.log'
+```
+
+wrapper 会先进入 `DEV_EXEC_DIR`，再执行 `DEV_EXEC_SHELL -lc`。远程 stdout 和
+stderr 原样返回，SSH 成功连接后返回远程命令的退出码。
+
+## Mutagen：可选，但源码新鲜度不可省略
+
+### 不需要 Mutagen 的情况
+
+以下场景不要额外安装 Mutagen：
+
+- VM 和权威环境使用同一个共享或挂载的 checkout；
+- VM 当前路径本身就是权威 checkout；
+- 已经有其他同步工具，并且它有明确、可验证的完成信号。
+
+此时不要设置 `DEV_EXEC_MUTAGEN_SESSION`，但每次验证前仍要确认权威 checkout
+确实包含最新编辑内容。wrapper 无法猜测两个目录是否同步。
+
+### 需要 Mutagen 的情况
+
+当 VM 和 Mac/工作站是两个 checkout，且 VM 是主要编辑侧时，Mutagen 很有用。
+按照团队的同步策略创建 session。下面是通用形式，路径和 alias 需要替换：
+
+```sh
+mutagen sync create \
+  --name=project-sync \
+  /absolute/path/to/project/on/vm \
+  ssh://dev-machine/absolute/path/to/project/on/authoritative-machine
+```
+
+先确认 session 健康并手动 flush 一次：
+
+```sh
+mutagen sync list
+mutagen sync flush -- project-sync
+```
+
+然后在 VM 项目的 `.dev-exec.env` 中只保存 session 名称：
+
+```sh
+DEV_EXEC_HOST=dev-machine
+DEV_EXEC_DIR=/absolute/path/to/project/on/authoritative-machine
+DEV_EXEC_SHELL=/bin/zsh
+DEV_EXEC_MUTAGEN_SESSION=project-sync
+DEV_EXEC_MUTAGEN_BIN=mutagen
+```
+
+之后每次 `dev-exec` 都会先执行 `mutagen sync flush -- project-sync`。flush
+失败时不会启动 SSH；应修复同步状态，不要绕过前置检查。
+
+flush 在运行 `dev-exec` 的环境中执行。Claude 如果运行在 VM，Mutagen 和
+session 都必须在 VM 侧可用，并且 VM 能使用该 session 所需的 SSH alias。只在
+Mac 安装 Mutagen，不能满足 VM 侧的执行前置检查。
+
+运行 formatter、generator、migration、install 或更新 snapshot 前，先确定
+生成文件由哪一侧拥有，以及如何安全回传到编辑环境。Mutagen 不会替你解决
+这些所有权问题。
+
+## macOS 非管理员反向 Relay
+
+当权威环境是 Mac、Claude 在 VM 中运行，而 VM 因为无法开启 Remote Login 或
+没有管理员权限而不能主动连入 Mac 时，使用反向 relay。
+
+```text
+VM: dev-exec / ssh rde-mac-dev
+        -> VM 127.0.0.1:22022
+        -> Mac 发起的反向 SSH forward
+        -> Mac 127.0.0.1:22022
+        -> 用户自己的 sshd
+        -> Mac 项目、工具链、服务和运行时
+```
+
+这里有两个方向相反的 alias：
+
+- `dev-vm`：Mac 用它连接 VM，并创建反向隧道。
+- `rde-mac-dev`：安装在 VM，经过隧道回到 Mac。
+
+### 在 Mac 上一键 setup
+
+先确认 Mac 已经可以免密码连接 VM：
+
+```sh
+ssh dev-vm true
+```
+
+然后执行：
+
+```sh
+~/code/remote-dev-execution/scripts/dev-relay setup dev-vm \
+  --project /absolute/path/to/project/on/vm \
+           /absolute/path/to/project/on/mac \
+  --shell /bin/zsh \
+  --mutagen project-sync
+```
+
+所有 alias、路径、shell 和 Mutagen session 都是示例，必须替换。`--project`
+是可选的，但提供后会在 VM 项目中生成 `.dev-exec.env`，并尽量写入该项目
+checkout 的 `.git/info/exclude`。不提供时，需要在 VM 手动创建配置文件。
+
+setup 会在不使用管理员权限的情况下：
+
+1. 在 VM 生成专用 Ed25519 key（如果还没有）。
+2. 只取 VM 公钥，用于授权 Mac 用户态 `sshd`。
+3. 创建只监听 loopback 的 Mac `sshd`，并启动反向隧道。
+4. 在 VM 安装受管理的 SSH alias 和精确的 relay host-key 信任。
+5. 在 VM 安装 `~/.local/share/remote-dev-execution/dev-exec`，只有在
+   `~/.local/bin/dev-exec` 未被占用时才创建链接。
+6. 执行一次 VM 到 Mac 的端到端验证。
+
+setup 只负责连通性，不会自动同步两个独立 checkout，除非设置了 `--mutagen`
+或其他可靠同步机制。relay 活跃时，VM 可以以当前 Mac 用户打开 shell，
+并不局限于某个项目目录，所以只应连接可信 VM。
+
+### 启动、查看和停止
+
+`setup` 会自动启动 relay。Mac 休眠、网络变化或 VM 重启后，执行：
+
+```sh
+~/code/remote-dev-execution/scripts/dev-relay status
+~/code/remote-dev-execution/scripts/dev-relay stop
+~/code/remote-dev-execution/scripts/dev-relay start
+```
+
+也可以让当前终端持有前台进程：
+
+```sh
+~/code/remote-dev-execution/scripts/dev-relay foreground
+```
+
+`foreground` 退出时会清理它启动的用户态 `sshd`。后台 relay 正在运行时不要
+再启动 foreground。
+
+### 在 VM 验证回程
+
+setup 通常已经安装了 alias，可以先明确测试方向：
+
+```sh
+ssh rde-mac-dev 'uname -a'
+```
+
+然后在 VM 项目中执行权威测试：
+
+```sh
+~/.local/share/remote-dev-execution/dev-exec -- npm test
+```
+
+如果 setup 没有使用 `--project`，在 VM 项目中手动写入：
+
+```sh
+cat > .dev-exec.env <<'EOF'
+DEV_EXEC_HOST=rde-mac-dev
+DEV_EXEC_DIR=/absolute/path/to/project/on/mac
+DEV_EXEC_SHELL=/bin/zsh
+# 两个 checkout 分离时可选：
+# DEV_EXEC_MUTAGEN_SESSION=project-sync
+EOF
+chmod 600 .dev-exec.env
+```
+
+### 交互式调试和 debug 端口
+
+`dev-exec` 适合非交互命令。需要 shell、REPL 或终端 debugger 时使用 TTY：
+
+```sh
+ssh -t rde-mac-dev \
+  'cd /absolute/path/to/project/on/mac && exec /bin/zsh -l'
+```
+
+如果需要把 Mac 上的 debug 服务映射到 VM loopback，在 Mac 的
+`~/.config/remote-dev-execution/relay.env` 中加入：
+
+```sh
+DEV_RELAY_DEBUG_PORTS="3000 5005 9229"
+```
+
+重启 relay，并让 Mac 侧服务监听 `127.0.0.1`。端口只在两台机器的 loopback
+之间转发，不会暴露到局域网。
+
+手动 relay、生成 VM SSH 配置、安全模型和限制见
+[references/reverse-relay.md](references/reverse-relay.md)。
+
+## 端到端 Demo
+
+### Demo A：直接 SSH，共享 checkout
+
+```sh
+# 在 VM 项目中执行。
+printf '%s\n' \
+  'DEV_EXEC_HOST=dev-machine' \
+  'DEV_EXEC_DIR=/absolute/path/to/shared/project' \
+  'DEV_EXEC_SHELL=/bin/zsh' > .dev-exec.env
+chmod 600 .dev-exec.env
+
+ssh dev-machine true
+~/code/remote-dev-execution/scripts/dev-exec -- npm test
+```
+
+双方使用同一个 checkout，所以不需要 Mutagen。
+
+### Demo B：两个 checkout，使用 Mutagen
+
+```sh
+# 按团队同步策略配置 session 后，可先手动验证。
+mutagen sync flush -- project-sync
+
+# 在 VM 项目中执行。
+printf '%s\n' \
+  'DEV_EXEC_HOST=dev-machine' \
+  'DEV_EXEC_DIR=/absolute/path/to/project/on/authoritative-machine' \
+  'DEV_EXEC_MUTAGEN_SESSION=project-sync' > .dev-exec.env
+chmod 600 .dev-exec.env
+
+~/code/remote-dev-execution/scripts/dev-exec -- npm test
+```
+
+wrapper 每次执行前都会 flush，flush 失败则不会运行测试。
+
+### Demo C：VM Claude 调试非管理员 Mac
+
+```sh
+# Mac 上：建立 relay，并自动生成 VM 项目配置。
+ssh dev-vm true
+~/code/remote-dev-execution/scripts/dev-relay setup dev-vm \
+  --project /absolute/path/to/project/on/vm \
+           /absolute/path/to/project/on/mac \
+  --shell /bin/zsh \
+  --mutagen project-sync
+
+# VM 项目中：验证回程并运行 Mac 侧测试。
+ssh rde-mac-dev 'uname -a'
+~/.local/share/remote-dev-execution/dev-exec -- npm test
+```
+
+## 常见问题
+
+| 现象 | 检查方式 |
+| --- | --- |
+| `DEV_EXEC_HOST is required` | 在目标项目或父目录创建 `.dev-exec.env`，或导出必需变量。 |
+| `configuration not found` | 确认当前目录在目标项目树内。 |
+| SSH 要求输入密码 | 先修复普通 SSH alias 和 keychain；wrapper 本身是非交互的。 |
+| 远程目录不存在 | 确认 `DEV_EXEC_DIR` 是权威机器上的绝对路径。 |
+| Mutagen flush 失败 | 执行 `mutagen sync list` 和 `mutagen sync flush -- SESSION`，不要绕过检查。 |
+| relay 已停止 | Mac 上运行 `dev-relay status`，然后 `stop` 再 `start`。 |
+| VM host-key 错误 | 重新运行 setup 或 `print-vm-config`，安装精确生成的 trust 条目，不要关闭严格校验。 |
+| debugger 无法连接 | 只配置需要的 `DEV_RELAY_DEBUG_PORTS`，让服务监听 loopback，然后重启 relay。 |
+| macOS 日志出现 audit/login 警告 | 非 root `sshd` 可能无法写系统审计数据库；命令和 TTY 会话仍可能正常。 |
+
+## 安全和脱敏清单
+
+以下内容必须留在 Git 之外：
+
+- `.dev-exec.env` 和 `relay.env`；
+- SSH 私钥、`known_hosts` 材料和 relay state；
+- 用户名、主机名、IP、项目绝对路径、Token 和密码；
+- 含凭据或个人数据的日志和命令输出。
+
+推送到团队仓库或公开仓库前执行扫描。`dev-machine`、`dev-vm`、
+`rde-mac-dev`、`127.0.0.1` 和 `/absolute/path/...` 都是故意使用的通用示例：
+
+```sh
+git status --short --ignored
+git grep -n -I -E \
+  '(/Users/|/home/|/var/folders|ssh-(rsa|ed25519)|BEGIN .*PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]+|Bearer [A-Za-z0-9._-]+)' \
+  -- . ':!README.md' ':!README.zh-CN.md' || true
+```
+
+如果真实秘密曾经进入 Git，先撤销或轮换，再按团队批准的历史重写流程清理；
+只删除最新文件中的一行并不能消除 Git 历史中的秘密。
+
+## 更新、卸载和公开发布
+
+更新到经过审核的 ref：
+
+```sh
+~/code/remote-dev-execution/scripts/install-skill.sh \
+  --repo https://github.com/lajidonggua/remote-dev-execution.git \
+  --ref main \
+  --client claude
+```
+
+卸载时先确认用户级目标是指向 canonical checkout 的软链接，只删除软链接；
+是否删除 checkout 另行决定。
+
+公开发布前，先合并经过审核的变更，等待 `Validate` workflow 通过，再创建
+类似 `v0.1.0` 的 annotated tag，让用户安装固定 tag，而不是未经审核的移动
+分支。不要使用 `curl | sh`；先 clone 经过审核的仓库，再运行可见的安装脚本。
+
+## 验证改动
+
+运行 CI 使用的检查：
+
+```sh
+sh -n scripts/dev-exec scripts/dev-relay scripts/install-skill.sh \
+  tests/test-dev-exec.sh tests/test-install-skill.sh
+tests/test-dev-exec.sh
+tests/test-install-skill.sh
+```
+
+官方 Skill 元数据校验还需要 Python `PyYAML`。
+
+## 参考和许可证
+
+- [配置参考](references/configuration.md)
+- [macOS 非管理员反向 relay 参考](references/reverse-relay.md)
+- [MIT License](LICENSE)
