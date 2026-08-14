@@ -28,7 +28,7 @@ Keep usernames, network addresses, ports, keys, credentials, and machine-specifi
 Clone this repository to its canonical location:
 
 ```sh
-git clone https://github.com/OWNER/remote-dev-execution.git ~/code/remote-dev-execution
+git clone https://github.com/lajidonggua/remote-dev-execution.git ~/code/remote-dev-execution
 ```
 
 Link that canonical copy into each supported user-level Skill directory:
