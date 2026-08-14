@@ -26,21 +26,44 @@ Keep usernames, network addresses, ports, keys, credentials, and machine-specifi
 
 ## Install
 
-Clone this repository to its canonical location:
+Keep one canonical Git checkout and link user-level Skill directories to it. The
+installer is safe to rerun: it updates only a clean checkout whose `origin`
+matches `--repo`, and it refuses existing files or links to another location.
+
+When Claude Code runs in the VM, run this on the VM. A Skill link on the Mac is
+not visible to the VM process:
 
 ```sh
-git clone https://github.com/lajidonggua/remote-dev-execution.git ~/code/remote-dev-execution
+git clone https://github.com/lajidonggua/remote-dev-execution.git \
+  ~/code/remote-dev-execution
+~/code/remote-dev-execution/scripts/install-skill.sh \
+  --repo https://github.com/lajidonggua/remote-dev-execution.git \
+  --ref main \
+  --client claude
 ```
 
-Link that canonical copy into each supported user-level Skill directory:
+Install both Claude and Codex links when both agents run in the same user
+environment:
 
 ```sh
-mkdir -p ~/.agents/skills ~/.claude/skills
-ln -s ~/code/remote-dev-execution ~/.agents/skills/remote-dev-execution
-ln -s ~/code/remote-dev-execution ~/.claude/skills/remote-dev-execution
+~/code/remote-dev-execution/scripts/install-skill.sh --client both
 ```
 
-Before creating a link, inspect any existing target. Do not replace a real directory or a link to another location without reviewing it first.
+For a private team repository, use the team's authenticated clone URL and pin
+the rollout ref. A branch is convenient during internal testing; a commit or
+release tag is reproducible:
+
+```sh
+~/code/remote-dev-execution/scripts/install-skill.sh \
+  --repo git@github.com:your-org/remote-dev-execution.git \
+  --ref team-stable \
+  --client claude
+```
+
+Useful controls are `--no-update` (use the existing checkout), `--dry-run`
+(preview actions), `--root DIR` (choose another canonical checkout), and
+`--target DIR` (choose a custom target for one client). The installer never
+uses `sudo` and does not modify system SSH or Remote Login settings.
 
 ## Configure a Project
 
@@ -99,13 +122,56 @@ Run authoritative commands from that VM project with the installed wrapper:
 
 See [references/reverse-relay.md](references/reverse-relay.md) for project configuration, manual setup, interactive debugging, debug-port forwarding, lifecycle, and policy limitations.
 
+## Team Rollout and Public Release
+
+For internal rollout, publish a reviewed branch or commit from the team's
+private repository and have each VM install that exact ref. Keep the canonical
+checkout and user-level link managed by `install-skill.sh`; do not commit
+`.dev-exec.env`, relay state, SSH keys, or local paths.
+
+Before public distribution:
+
+1. Merge the reviewed changes to `main`.
+2. Wait for the `Validate` workflow to pass on the commit.
+3. Create an annotated tag such as `v0.1.0` and a matching GitHub release.
+4. Tell users to install the tag, not an unreviewed moving branch:
+
+```sh
+~/code/remote-dev-execution/scripts/install-skill.sh \
+  --repo https://github.com/lajidonggua/remote-dev-execution.git \
+  --ref v0.1.0 \
+  --client claude
+```
+
+Do not use `curl | sh` for team or public installation. Clone the reviewed
+repository first so the installer and the selected ref are visible before they
+run.
+
 ## Update
 
 ```sh
-git -C ~/code/remote-dev-execution pull --ff-only
+~/code/remote-dev-execution/scripts/install-skill.sh \
+  --repo https://github.com/lajidonggua/remote-dev-execution.git \
+  --ref main \
+  --client claude
 ```
 
-Both Skill installations immediately see the updated canonical copy.
+Both Skill installations immediately see updates to the canonical copy. To
+remove a link, verify it points to the canonical checkout and delete only the
+link; keep or remove the checkout separately according to local policy.
+
+## Validate Changes
+
+Run the same checks used by CI before an internal rollout:
+
+```sh
+sh -n scripts/dev-exec scripts/dev-relay scripts/install-skill.sh \
+  tests/test-dev-exec.sh tests/test-install-skill.sh
+tests/test-dev-exec.sh
+tests/test-install-skill.sh
+```
+
+The official Skill metadata validator additionally requires Python `PyYAML`.
 
 ## License
 

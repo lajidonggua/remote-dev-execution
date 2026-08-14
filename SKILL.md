@@ -14,6 +14,8 @@ Read [references/configuration.md](references/configuration.md) when configuring
 
 Read [references/reverse-relay.md](references/reverse-relay.md) when a non-admin Mac cannot enable Remote Login or accept inbound VM connections. Use the bundled `scripts/dev-relay`; do not request `sudo`, change system Remote Login, bind a public interface, or weaken host-key checking.
 
+When the active agent runs in a VM, install this Skill in that VM's user-level directory. The Mac's `~/.claude/skills` and `~/.agents/skills` are separate filesystems. Use `scripts/install-skill.sh` with a canonical Git checkout and a pinned team branch, commit, or release tag; never copy machine-specific configuration into the Skill repository.
+
 ## Establish Connectivity
 
 - Use a direct SSH alias when the editing environment can already reach the authoritative development environment.

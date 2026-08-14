@@ -1,0 +1,80 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell-and-skill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install validator dependency
+        run: python -m pip install --disable-pip-version-check pyyaml
+
+      - name: Validate shell syntax
+        run: sh -n scripts/dev-exec scripts/dev-relay scripts/install-skill.sh tests/test-dev-exec.sh tests/test-install-skill.sh
+
+      - name: Validate Skill metadata
+        run: |
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+
+          validator_path = Path.home() / ".codex/skills/.system/skill-creator/scripts/quick_validate.py"
+          if validator_path.exists():
+              spec = importlib.util.spec_from_file_location("quick_validate", validator_path)
+              module = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(module)
+              valid, message = module.validate_skill(Path.cwd())
+              print(message)
+              raise SystemExit(0 if valid else 1)
+
+          import re
+          import yaml
+          text = Path("SKILL.md").read_text()
+          match = re.match(r"^---\n(.*?)\n---", text, re.S)
+          if not match:
+              raise SystemExit("SKILL.md frontmatter is missing")
+          frontmatter = yaml.safe_load(match.group(1))
+          if set(frontmatter) - {"name", "description", "license", "allowed-tools", "metadata"}:
+              raise SystemExit("SKILL.md contains unsupported frontmatter keys")
+          if frontmatter.get("name") != "remote-dev-execution":
+              raise SystemExit("unexpected Skill name")
+          if not frontmatter.get("description"):
+              raise SystemExit("Skill description is empty")
+          print("Skill metadata is valid")
+          PY
+
+      - name: Validate Codex UI metadata
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          document = yaml.safe_load(Path("agents/openai.yaml").read_text())
+          interface = document.get("interface", {})
+          if interface.get("display_name") != "Remote Development Execution":
+              raise SystemExit("unexpected display_name")
+          short_description = interface.get("short_description", "")
+          if not 25 <= len(short_description) <= 64:
+              raise SystemExit("short_description must be 25-64 characters")
+          if "$remote-dev-execution" not in interface.get("default_prompt", ""):
+              raise SystemExit("default_prompt must mention the Skill")
+          print("Codex UI metadata is valid")
+          PY
+
+      - name: Run wrapper and installer tests
+        run: tests/test-dev-exec.sh && tests/test-install-skill.sh
