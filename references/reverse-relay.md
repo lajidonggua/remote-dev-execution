@@ -84,9 +84,21 @@ Replace `dev-vm` with the Mac's trusted VM SSH alias. On first use, `setup` crea
 5. Installs `dev-exec` at `~/.local/share/remote-dev-execution/dev-exec` on the VM and creates `~/.local/bin/dev-exec` when that name is unused.
 6. Verifies VM-to-Mac authentication through the relay.
 
+To generate a project configuration in the same operation, provide both checkout paths explicitly:
+
+```sh
+~/code/remote-dev-execution/scripts/dev-relay setup dev-vm \
+  --project /absolute/path/to/project/on/the/vm \
+           /absolute/path/to/project/on/the/mac \
+  --shell /bin/zsh \
+  --mutagen workspace
+```
+
+The `--project` mapping writes a marked `.dev-exec.env` in the VM project, adds it to Git's local exclude when possible, and can be repeated safely. It refuses to replace a symlink or an unmarked existing file. `--shell` and `--mutagen` are optional. Both paths remain explicit because setup cannot safely infer which Mac checkout is authoritative.
+
 The command is safe to rerun. It replaces only its named managed SSH snippet and dedicated host-key entry. It refuses conflicting relay keys, alias collisions, symlinked managed snippets or dedicated trust files, and incompatible configuration rather than silently replacing them. When `~/.local/bin/dev-exec` already belongs to something else, setup leaves it untouched and reports the managed wrapper's full path.
 
-In each VM project, create an ignored `.dev-exec.env` containing the real Mac project path:
+If you did not provide `--project`, create an ignored `.dev-exec.env` in each VM project containing the real Mac project path:
 
 ```sh
 DEV_EXEC_HOST=rde-mac-dev

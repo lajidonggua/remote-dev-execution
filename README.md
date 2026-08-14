@@ -79,15 +79,17 @@ Replace `dev-vm` with a trusted, passwordless VM SSH alias. Setup creates the lo
 
 Use this only with a VM trusted to open a shell as the current Mac user. Connectivity setup does not synchronize separate project checkouts; configure Mutagen or another verified sync mechanism before accepting remote results.
 
-Then create an ignored `.dev-exec.env` in each VM project:
+To avoid editing `.dev-exec.env` by hand, rerun setup with both project paths:
 
 ```sh
-DEV_EXEC_HOST=rde-mac-dev
-DEV_EXEC_DIR=/absolute/path/to/project/on/the/mac
-DEV_EXEC_SHELL=/bin/zsh
+~/code/remote-dev-execution/scripts/dev-relay setup dev-vm \
+  --project /absolute/path/to/project/on/the/vm \
+           /absolute/path/to/project/on/the/mac \
+  --shell /bin/zsh \
+  --mutagen workspace
 ```
 
-Replace `rde-mac-dev` with the configured `rde-*` alias when it was customized.
+`--project` is optional but must receive both paths explicitly because VM and Mac checkout paths cannot be inferred safely. Setup writes a marked `.dev-exec.env` in the VM project, keeps it out of Git's local exclude when possible, and is safe to rerun. Omit `--mutagen` when another source-sync mechanism is already verified.
 
 Run authoritative commands from that VM project with the installed wrapper:
 

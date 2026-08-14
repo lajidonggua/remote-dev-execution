@@ -6,6 +6,18 @@ Use a project-local `.dev-exec.env` to describe the authoritative development en
 
 `dev-exec` starts at the caller's current directory and searches each parent directory for the nearest `.dev-exec.env`. This lets commands run from nested package or test directories.
 
+For a relay-managed VM, the Mac setup command can generate the project file after the paths are confirmed:
+
+```sh
+~/code/remote-dev-execution/scripts/dev-relay setup VM_ALIAS \
+  --project /absolute/path/to/project/on/the/vm \
+           /absolute/path/to/project/on/the/mac \
+  --shell /bin/zsh \
+  --mutagen SESSION
+```
+
+Both paths are required because their relationship is project-specific. The generated file is marked as managed, written with mode `0600`, replaced atomically on repeat setup, and refused when an unmarked file or symlink already exists. When the VM project is a Git checkout, setup adds `.dev-exec.env` to `.git/info/exclude` when that local file is writable. It never adds the project-specific path to this Skill repository.
+
 The file is optional when all required values are already exported in the process environment. Explicit process environment values take precedence over values loaded from the file, which supports temporary overrides:
 
 ```sh
