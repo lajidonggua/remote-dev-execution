@@ -71,12 +71,31 @@ The wrapper searches for `.dev-exec.env` relative to the current working directo
 When macOS Remote Login cannot be enabled, run a loopback-only user sshd and let the Mac initiate a reverse SSH tunnel to the VM:
 
 ```sh
-~/code/remote-dev-execution/scripts/dev-relay init VM_PUBLIC_KEY_FILE
-~/code/remote-dev-execution/scripts/dev-relay start
-~/code/remote-dev-execution/scripts/dev-relay status
+ssh dev-vm true
+~/code/remote-dev-execution/scripts/dev-relay setup dev-vm
 ```
 
-This does not require `sudo`, port 22, firewall changes, or an inbound Mac address. It uses dedicated keys and strict host verification. See [references/reverse-relay.md](references/reverse-relay.md) for secure setup, VM configuration, interactive debugging, debug-port forwarding, lifecycle, and policy limitations.
+Replace `dev-vm` with a trusted, passwordless VM SSH alias. Setup creates the local relay configuration when absent, provisions a dedicated VM key, initializes and starts the user sshd, installs managed VM SSH trust/config, installs `dev-exec` on the VM, and verifies the return path. It is safe to rerun and does not require `sudo`, port 22, firewall changes, or an inbound Mac address.
+
+Use this only with a VM trusted to open a shell as the current Mac user. Connectivity setup does not synchronize separate project checkouts; configure Mutagen or another verified sync mechanism before accepting remote results.
+
+Then create an ignored `.dev-exec.env` in each VM project:
+
+```sh
+DEV_EXEC_HOST=rde-mac-dev
+DEV_EXEC_DIR=/absolute/path/to/project/on/the/mac
+DEV_EXEC_SHELL=/bin/zsh
+```
+
+Replace `rde-mac-dev` with the configured `rde-*` alias when it was customized.
+
+Run authoritative commands from that VM project with the installed wrapper:
+
+```sh
+~/.local/share/remote-dev-execution/dev-exec -- npm test
+```
+
+See [references/reverse-relay.md](references/reverse-relay.md) for project configuration, manual setup, interactive debugging, debug-port forwarding, lifecycle, and policy limitations.
 
 ## Update
 

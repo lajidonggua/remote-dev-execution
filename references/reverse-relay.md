@@ -7,7 +7,8 @@ Use this topology when the authoritative development environment is a Mac where 
 - [Topology](#topology)
 - [Security Model](#security-model)
 - [Prerequisites](#prerequisites)
-- [Setup](#setup)
+- [One-Command Setup](#one-command-setup)
+- [Manual Setup](#manual-setup)
 - [Execution and Debugging](#execution-and-debugging)
 - [Lifecycle](#lifecycle)
 - [Troubleshooting](#troubleshooting)
@@ -47,16 +48,63 @@ The user-owned `sshd` binds only a high loopback port. It does not enable macOS 
 
 Keep both private keys on the machine that generated them. A VM with multiple users still exposes its loopback listener to those users, but the Mac relay requires the dedicated private key.
 
+The dedicated VM key authenticates as the current Mac user and permits commands and TTY sessions while the relay is active. Use this design only with a VM you trust at that level. The relay does not confine access to one project directory.
+
 ## Prerequisites
 
 - macOS has `/usr/sbin/sshd`, `/usr/bin/ssh`, and `/usr/bin/ssh-keygen`.
 - The Mac user can already SSH outward to a VM alias such as `dev-vm`.
+- The outer VM alias does not define unrelated `LocalForward`, `RemoteForward`, or `DynamicForward` entries. Use a dedicated alias or `DEV_RELAY_OUTER_SSH_CONFIG` when necessary.
 - The VM SSH server permits remote forwarding. Most OpenSSH servers do by default.
+- The VM account uses a POSIX-compatible login shell such as `sh`, Bash, Zsh, Dash, or Ksh. Automated setup checks this before provisioning.
 - Both relay ports are unused high ports.
 
 The VM does not need to reach the Mac network address. NAT, a changing Mac address, and inbound firewall restrictions do not affect this topology.
 
-## Setup
+## One-Command Setup
+
+First confirm that the Mac already trusts the VM host key and can authenticate without an interactive password prompt:
+
+```sh
+ssh dev-vm true
+```
+
+Then run on the Mac:
+
+```sh
+~/code/remote-dev-execution/scripts/dev-relay setup dev-vm
+```
+
+Replace `dev-vm` with the Mac's trusted VM SSH alias. On first use, `setup` creates the local relay configuration with loopback-only high-port defaults. It then:
+
+1. Generates a dedicated Ed25519 relay key on the VM when absent.
+2. Retrieves only that key's public half and initializes the Mac user sshd.
+3. Starts the reverse tunnel.
+4. Installs a managed VM SSH snippet and exact Mac relay host key.
+5. Installs `dev-exec` at `~/.local/share/remote-dev-execution/dev-exec` on the VM and creates `~/.local/bin/dev-exec` when that name is unused.
+6. Verifies VM-to-Mac authentication through the relay.
+
+The command is safe to rerun. It replaces only its named managed SSH snippet and dedicated host-key entry. It refuses conflicting relay keys, alias collisions, symlinked managed snippets or dedicated trust files, and incompatible configuration rather than silently replacing them. When `~/.local/bin/dev-exec` already belongs to something else, setup leaves it untouched and reports the managed wrapper's full path.
+
+In each VM project, create an ignored `.dev-exec.env` containing the real Mac project path:
+
+```sh
+DEV_EXEC_HOST=rde-mac-dev
+DEV_EXEC_DIR=/absolute/path/to/project/on/the/mac
+DEV_EXEC_SHELL=/bin/zsh
+```
+
+Then execute from the VM project:
+
+```sh
+~/.local/share/remote-dev-execution/dev-exec -- npm test
+```
+
+Relay setup establishes execution connectivity; it does not synchronize project files. If the VM and Mac use separate checkouts, configure and verify Mutagen or another synchronization mechanism before trusting remote results. Add the existing session to `.dev-exec.env` as `DEV_EXEC_MUTAGEN_SESSION`; `dev-exec` will flush it and stop before SSH when the flush fails.
+
+Use the following manual procedure only when customizing keys, ports, paths, or trust installation, or when diagnosing a failed automated setup.
+
+## Manual Setup
 
 ### 1. Generate a dedicated key on the VM
 
@@ -133,15 +181,15 @@ Run on the Mac:
 
 ```sh
 ~/code/remote-dev-execution/scripts/dev-relay print-vm-config \
-  ~/.ssh/remote-dev-mac
+  '~/.ssh/remote-dev-mac'
 ```
 
-Add the printed `Host` block to the VM's `~/.ssh/config` and append the printed host-key line to the VM's `~/.ssh/known_hosts`. The identity path in the command is interpreted on the VM.
+Add the printed `Host` block to the VM's `~/.ssh/config` and write the printed host-key line to the dedicated VM file `~/.ssh/remote-dev-execution/known_hosts`. The identity path in the command is interpreted on the VM.
 
 Test from the VM:
 
 ```sh
-ssh mac-dev-relay 'uname -a'
+ssh rde-mac-dev 'uname -a'
 ```
 
 ### 7. Configure each project on the VM
@@ -149,7 +197,7 @@ ssh mac-dev-relay 'uname -a'
 In the VM editing copy, use the printed alias:
 
 ```sh
-DEV_EXEC_HOST=mac-dev-relay
+DEV_EXEC_HOST=rde-mac-dev
 DEV_EXEC_DIR=/absolute/path/to/project/on/the/mac
 DEV_EXEC_SHELL=/bin/zsh
 ```
@@ -173,7 +221,7 @@ The existing `dev-exec` stdout, stderr, exit-status, source-freshness, and Mutag
 `dev-exec` intentionally preserves separate non-TTY streams. Use direct SSH when a debugger needs a terminal:
 
 ```sh
-ssh -t mac-dev-relay \
+ssh -t rde-mac-dev \
   'cd /absolute/path/to/project/on/the/mac && exec /bin/zsh -l'
 ```
 

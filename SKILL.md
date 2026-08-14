@@ -18,6 +18,7 @@ Read [references/reverse-relay.md](references/reverse-relay.md) when a non-admin
 
 - Use a direct SSH alias when the editing environment can already reach the authoritative development environment.
 - Use the reverse relay when a Mac can connect outward to the VM but the VM cannot connect inbound to the Mac.
+- Prefer `dev-relay setup VM_ALIAS` for initial or repeatable deployment. It provisions dedicated keys, managed VM SSH entries, the VM wrapper, the relay, and an end-to-end check without administrator access.
 - Run `dev-relay status` on the Mac before diagnosing `dev-exec` through a relay.
 - Use `dev-exec` for non-interactive commands with separate stdout and stderr.
 - Use direct `ssh -t` through the relay alias for an interactive shell or terminal debugger.
