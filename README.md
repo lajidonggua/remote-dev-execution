@@ -24,11 +24,74 @@ VM cannot connect inbound to the Mac.
 
 **中文文档:** [README.zh-CN.md](README.zh-CN.md)
 
+## Quick Start: One Relay Setup
+
+For a non-admin Mac plus a VM-hosted Claude Code session, `dev-relay setup`
+can provision the relay, install the VM command wrapper, install this Skill for
+Claude, and generate the project's ignored configuration in one operation.
+
+Confirm these two prerequisites first:
+
+1. The Mac can already run `ssh VM_ALIAS true` without a password prompt.
+2. The authoritative checkout receives current edits through a shared checkout
+   or a verified synchronization mechanism. For separate checkouts using
+   Mutagen, create and successfully flush the session in the VM first.
+
+Then run on the Mac from this canonical checkout:
+
+```sh
+~/code/remote-dev-execution/scripts/dev-relay setup VM_ALIAS \
+  --client claude \
+  --project /absolute/path/to/project/in/agent-environment \
+            /absolute/path/to/project/in/authoritative-environment \
+  --shell /bin/zsh \
+  --mutagen MUTAGEN_SESSION
+```
+
+Replace every uppercase placeholder. Omit `--mutagen MUTAGEN_SESSION` only
+when both environments use the same shared checkout or another synchronization
+preflight is completed before each validation. `--client codex` installs the
+Codex link; `--client both` installs both links in the VM.
+
+The two project paths and the source-freshness strategy are the only required
+project choices. Setup does not guess them because a wrong guess can produce a
+successful test against stale or unrelated source.
+
+After setup, start a new Claude/Codex session. From the project in the agent
+environment, run:
+
+```sh
+~/.local/share/remote-dev-execution/dev-exec doctor
+```
+
+A test is ready to run only when source freshness is confirmed, either by a
+successful preflight or by a reviewed shared-checkout guarantee, and doctor
+reports `authoritative execution: ready`. If it instead reports
+`source freshness: not verified`, connectivity works, but do not test current
+edits until the shared checkout or external synchronization has been confirmed.
+
+Invoke the Skill with a topology-neutral prompt:
+
+```text
+Use $remote-dev-execution to validate delegated execution and run the smallest relevant project check without exposing infrastructure details.
+```
+
+For an existing relay that installed only the wrapper, repair the missing VM
+Skill installation from the Mac, then restart the agent:
+
+```sh
+~/code/remote-dev-execution/scripts/dev-relay install-skill --client claude
+```
+
+See [Agent execution validation](references/agent-validation.md) for the full
+privacy-safe prompt and observable acceptance criteria.
+
 ## What This Repository Contains
 
 - `SKILL.md`: instructions loaded by Codex or Claude when the Skill is active.
-- `scripts/dev-exec`: project-aware command wrapper with config lookup,
-  optional Mutagen flush, SSH execution, and exit-status preservation.
+- `scripts/dev-exec`: project-aware command wrapper with a redacted doctor,
+  config lookup, optional Mutagen flush, SSH execution, and exit-status
+  preservation.
 - `scripts/dev-relay`: user-owned macOS `sshd` plus a Mac-initiated reverse
   SSH tunnel. It does not require administrator privileges.
 - `scripts/install-skill.sh`: safe canonical-checkout and user-level-link
@@ -37,6 +100,8 @@ VM cannot connect inbound to the Mac.
   rules.
 - `references/reverse-relay.md`: relay security model, manual setup, and
   troubleshooting details.
+- `references/agent-validation.md`: privacy-safe Agent prompt and observable
+  proof that project tests were delegated.
 - `assets/*.example`: templates containing placeholders only.
 
 The repository is the canonical copy. Do not put project paths, SSH hosts,
@@ -175,7 +240,7 @@ nearest `.dev-exec.env`. Process environment values override file values for
 temporary changes:
 
 ```sh
-DEV_EXEC_SHELL=/bin/sh ~/code/remote-dev-execution/scripts/dev-exec -- npm test
+DEV_EXEC_SHELL=/bin/sh ~/code/remote-dev-execution/scripts/dev-exec doctor
 ```
 
 For all variables and precedence rules, read
@@ -202,10 +267,9 @@ Test non-interactively before involving the Skill:
 
 ```sh
 ssh dev-machine true
-ssh dev-machine 'uname -a'
 ```
 
-If either command prompts for a password or fails host-key verification, fix
+If the command prompts for a password or fails host-key verification, fix
 ordinary SSH first. Do not disable host-key checking in the Skill.
 
 ### 2. Point the project at the authoritative checkout
@@ -227,8 +291,12 @@ the VM. It must be absolute.
 ### 3. Run the smallest useful authoritative check
 
 ```sh
+~/code/remote-dev-execution/scripts/dev-exec doctor
 ~/code/remote-dev-execution/scripts/dev-exec -- npm test -- --runInBand
 ```
+
+Do not run the test when doctor reports failed execution or when source
+freshness has not been confirmed.
 
 For pipelines or shell operators, pass one quoted command string:
 
@@ -333,6 +401,7 @@ Then run:
 
 ```sh
 ~/code/remote-dev-execution/scripts/dev-relay setup dev-vm \
+  --client claude \
   --project /absolute/path/to/project/on/vm \
            /absolute/path/to/project/on/mac \
   --shell /bin/zsh \
@@ -342,7 +411,8 @@ Then run:
 Replace all paths, aliases, shell, and session values with local values. The
 `--project` mapping is optional. It generates the VM project's `.dev-exec.env`
 and adds that file to the VM checkout's local Git exclude when possible. If you
-omit `--project`, create the file manually on the VM as shown below.
+omit `--project`, create the file manually on the VM as shown below. `--client`
+installs this Skill in the environment where the Agent runs.
 
 Setup performs these operations without administrator access:
 
@@ -352,12 +422,24 @@ Setup performs these operations without administrator access:
 4. Installs a managed VM SSH alias and exact relay host-key trust entry.
 5. Installs `dev-exec` at `~/.local/share/remote-dev-execution/dev-exec` on the
    VM and creates `~/.local/bin/dev-exec` only when that name is unused.
-6. Verifies a VM-to-Mac command through the relay.
+6. Installs a canonical Git checkout and user-level Skill link for the selected
+   Agent client.
+7. Verifies a VM-to-Mac command through the relay.
 
 It does not synchronize separate project checkouts unless `--mutagen` or
 another verified mechanism is configured. It does not grant access only to one
 project: the VM can open a shell as the current Mac user while the relay is
 active, so use it only with a trusted VM.
+
+For a relay created by an earlier version, install only the missing Agent Skill
+without rebuilding the relay:
+
+```sh
+~/code/remote-dev-execution/scripts/dev-relay install-skill --client claude
+```
+
+Use `--repo` and `--ref` with either command for an internal repository or a
+reviewed release. Restart the Agent afterward so it discovers the Skill.
 
 ### Start, inspect, and stop the relay
 
@@ -381,18 +463,19 @@ when the process exits. Do not run it while a background tunnel is active.
 
 ### Verify from the VM
 
-The setup command normally installs the SSH alias automatically. A direct
-check makes the direction explicit:
+Setup already performs a raw end-to-end relay check. For normal user and Agent
+verification, run the redacted doctor command from the VM project:
 
 ```sh
-ssh rde-mac-dev 'uname -a'
+~/.local/share/remote-dev-execution/dev-exec doctor
 ```
 
-From the VM project, use the installed wrapper:
-
-```sh
-~/.local/share/remote-dev-execution/dev-exec -- npm test
-```
+Doctor proves that the wrapper reached the environment declared by the trusted
+project configuration. It does not independently decide whether that endpoint
+is authoritative or whether an unconfigured separate checkout is current.
+Run a project test only after the endpoint and source-freshness declarations
+have been reviewed. Use raw `ssh` probes only during user-approved verbose
+troubleshooting because they can reveal infrastructure details.
 
 Without `--project`, create the ignored file on the VM:
 
@@ -445,6 +528,7 @@ printf '%s\n' \
 chmod 600 .dev-exec.env
 
 ssh dev-machine true
+~/code/remote-dev-execution/scripts/dev-exec doctor
 ~/code/remote-dev-execution/scripts/dev-exec -- npm test
 ```
 
@@ -463,6 +547,7 @@ printf '%s\n' \
   'DEV_EXEC_MUTAGEN_SESSION=project-sync' > .dev-exec.env
 chmod 600 .dev-exec.env
 
+~/code/remote-dev-execution/scripts/dev-exec doctor
 ~/code/remote-dev-execution/scripts/dev-exec -- npm test
 ```
 
@@ -474,13 +559,14 @@ The wrapper flushes before every run and stops if the flush fails.
 # On the Mac: install the relay and generate VM project config.
 ssh dev-vm true
 ~/code/remote-dev-execution/scripts/dev-relay setup dev-vm \
+  --client claude \
   --project /absolute/path/to/project/on/vm \
            /absolute/path/to/project/on/mac \
   --shell /bin/zsh \
   --mutagen project-sync
 
-# In the VM project: verify the reverse path and run the Mac-side test.
-ssh rde-mac-dev 'uname -a'
+# In the VM project: verify delegated execution, then run the test.
+~/.local/share/remote-dev-execution/dev-exec doctor
 ~/.local/share/remote-dev-execution/dev-exec -- npm test
 ```
 
@@ -493,6 +579,9 @@ ssh rde-mac-dev 'uname -a'
 | SSH prompts for a password | Fix the ordinary SSH alias and keychain first; the wrapper is non-interactive. |
 | Remote directory fails | Confirm `DEV_EXEC_DIR` is absolute and exists on the authoritative machine. |
 | Mutagen flush fails | Run `mutagen sync list` and `mutagen sync flush -- SESSION`; do not bypass the preflight. |
+| Doctor reports `source freshness: not verified` | Confirm a shared checkout or complete the external sync before testing; connectivity alone is insufficient. |
+| Setup finds an unmanaged `.dev-exec.env` | Keep it and rerun without `--project`, or move it to a backup after review and rerun setup. It is never overwritten automatically. |
+| The Agent cannot find this Skill | Run `dev-relay install-skill` with the matching `--client`, then restart the Agent. |
 | Relay is stopped | On the Mac run `dev-relay status`, then `stop` and `start`. |
 | VM host-key failure | Re-run `dev-relay print-vm-config` or setup and install the exact generated trust entry. Never disable strict checking. |
 | Debugger cannot connect | Configure only the required `DEV_RELAY_DEBUG_PORTS`, bind the service to loopback, and restart the relay. |
@@ -549,8 +638,9 @@ Run the same checks used by CI:
 
 ```sh
 sh -n scripts/dev-exec scripts/dev-relay scripts/install-skill.sh \
-  tests/test-dev-exec.sh tests/test-install-skill.sh
+  tests/test-dev-exec.sh tests/test-dev-relay.sh tests/test-install-skill.sh
 tests/test-dev-exec.sh
+tests/test-dev-relay.sh
 tests/test-install-skill.sh
 ```
 
@@ -560,4 +650,5 @@ The official Skill metadata validator additionally requires Python `PyYAML`.
 
 - [Configuration reference](references/configuration.md)
 - [Non-admin macOS reverse relay reference](references/reverse-relay.md)
+- [Agent execution validation](references/agent-validation.md)
 - [MIT License](LICENSE)

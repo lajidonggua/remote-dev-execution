@@ -1,4 +1,4 @@
 interface:
   display_name: "Remote Development Execution"
-  short_description: "Connect to and run commands in the authoritative environment"
-  default_prompt: "Use $remote-dev-execution to connect to or run the appropriate command in my authoritative development environment."
+  short_description: "Validate and run commands in the authoritative environment"
+  default_prompt: "Use $remote-dev-execution to validate delegated execution and run the smallest appropriate project check without exposing infrastructure details."

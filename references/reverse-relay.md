@@ -72,7 +72,7 @@ ssh dev-vm true
 Then run on the Mac:
 
 ```sh
-~/code/remote-dev-execution/scripts/dev-relay setup dev-vm
+~/code/remote-dev-execution/scripts/dev-relay setup dev-vm --client claude
 ```
 
 Replace `dev-vm` with the Mac's trusted VM SSH alias. On first use, `setup` creates the local relay configuration with loopback-only high-port defaults. It then:
@@ -82,12 +82,14 @@ Replace `dev-vm` with the Mac's trusted VM SSH alias. On first use, `setup` crea
 3. Starts the reverse tunnel.
 4. Installs a managed VM SSH snippet and exact Mac relay host key.
 5. Installs `dev-exec` at `~/.local/share/remote-dev-execution/dev-exec` on the VM and creates `~/.local/bin/dev-exec` when that name is unused.
-6. Verifies VM-to-Mac authentication through the relay.
+6. Installs this Skill for the selected VM Agent client using a canonical Git checkout and user-level link.
+7. Verifies VM-to-Mac authentication through the relay.
 
 To generate a project configuration in the same operation, provide both checkout paths explicitly:
 
 ```sh
 ~/code/remote-dev-execution/scripts/dev-relay setup dev-vm \
+  --client claude \
   --project /absolute/path/to/project/on/the/vm \
            /absolute/path/to/project/on/the/mac \
   --shell /bin/zsh \
@@ -95,6 +97,8 @@ To generate a project configuration in the same operation, provide both checkout
 ```
 
 The `--project` mapping writes a marked `.dev-exec.env` in the VM project, adds it to Git's local exclude when possible, and can be repeated safely. It refuses to replace a symlink or an unmarked existing file. `--shell` and `--mutagen` are optional. Both paths remain explicit because setup cannot safely infer which Mac checkout is authoritative.
+
+If setup reports an unmanaged project configuration, it has stopped before changing relay state. Keep the existing file and rerun without `--project` when it is already correct, or review and move it to a backup before asking setup to generate a managed file.
 
 The command is safe to rerun. It replaces only its named managed SSH snippet and dedicated host-key entry. It refuses conflicting relay keys, alias collisions, symlinked managed snippets or dedicated trust files, and incompatible configuration rather than silently replacing them. When `~/.local/bin/dev-exec` already belongs to something else, setup leaves it untouched and reports the managed wrapper's full path.
 
@@ -109,8 +113,16 @@ DEV_EXEC_SHELL=/bin/zsh
 Then execute from the VM project:
 
 ```sh
-~/.local/share/remote-dev-execution/dev-exec -- npm test
+~/.local/share/remote-dev-execution/dev-exec doctor
 ```
+
+Run a project test only after doctor reports delegated execution ready and source freshness is confirmed. If the relay already exists but the VM Agent cannot find the Skill, install only the missing Skill and restart the Agent:
+
+```sh
+~/code/remote-dev-execution/scripts/dev-relay install-skill --client claude
+```
+
+Use `--client codex` or `--client both` as appropriate. Add `--repo` and `--ref` when installing from an internal repository or pinning a reviewed release.
 
 Relay setup establishes execution connectivity; it does not synchronize project files. If the VM and Mac use separate checkouts, configure and verify Mutagen or another synchronization mechanism before trusting remote results. Add the existing session to `.dev-exec.env` as `DEV_EXEC_MUTAGEN_SESSION`; `dev-exec` will flush it and stop before SSH when the flush fails.
 
@@ -201,7 +213,7 @@ Add the printed `Host` block to the VM's `~/.ssh/config` and write the printed h
 Test from the VM:
 
 ```sh
-ssh rde-mac-dev 'uname -a'
+ssh rde-mac-dev true
 ```
 
 ### 7. Configure each project on the VM
@@ -223,10 +235,11 @@ Keep these values in the project's ignored `.dev-exec.env`, never in this Skill 
 Run from the VM project:
 
 ```sh
+~/code/remote-dev-execution/scripts/dev-exec doctor
 ~/code/remote-dev-execution/scripts/dev-exec -- npm test
 ```
 
-The existing `dev-exec` stdout, stderr, exit-status, source-freshness, and Mutagen rules still apply.
+Skip the test when doctor reports failed delegated execution or unverified source freshness. The existing `dev-exec` stdout, stderr, exit-status, source-freshness, and Mutagen rules still apply. Use the privacy-safe prompt and observable checks in [Agent Execution Validation](agent-validation.md) when testing Agent behavior.
 
 ### Interactive shell or debugger
 
@@ -277,6 +290,9 @@ No system LaunchDaemon or administrator-owned service is required.
 - **`remote port forwarding failed`:** Choose another high VM port, or ask the VM administrator whether `AllowTcpForwarding remote` is disabled.
 - **VM reports host-key failure:** Re-run `print-vm-config` and install the exact generated host-key line. Do not disable strict checking.
 - **Mac command fails but SSH works:** Confirm `DEV_EXEC_DIR`, the selected shell, PATH, project dependencies, and source freshness.
+- **Agent cannot find the Skill:** Run `dev-relay install-skill` with the matching `--client`, then restart the Agent session.
+- **Project config is unmanaged:** Preserve it and omit `--project`, or move it to a reviewed backup before rerunning setup. It is never overwritten automatically.
+- **Doctor reports source freshness unverified:** Confirm that both sides use the same checkout or complete the configured external synchronization before testing.
 - **macOS log mentions BSM audit or login records:** A non-root sshd may be unable to write system audit or login databases. This is expected when command and TTY sessions otherwise succeed.
 - **Connection disappeared:** Run `status`, then `stop` and `start`. Inspect the sshd log path printed by `status`.
 

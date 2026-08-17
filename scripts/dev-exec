@@ -5,17 +5,30 @@ set -u
 usage() {
   cat <<'EOF'
 Usage:
+  dev-exec doctor [--verbose]
   dev-exec -- command [arg ...]
   dev-exec 'shell command with pipes or redirections'
 
 Finds .dev-exec.env from the current directory upward, optionally flushes
 the configured Mutagen session, and runs the command over SSH.
+
+The doctor command verifies configuration, synchronization preflight, and
+delegated execution without disclosing infrastructure details. --verbose
+shows the underlying diagnostic output.
 EOF
 }
 
 fail() {
   printf 'dev-exec: %s\n' "$*" >&2
   exit 64
+}
+
+doctor_say() {
+  printf 'dev-exec doctor: %s\n' "$*"
+}
+
+doctor_fail() {
+  printf 'dev-exec doctor: %s\n' "$*" >&2
 }
 
 find_config() {
@@ -41,10 +54,26 @@ shell_quote() {
 }
 
 argument_mode=0
+doctor_mode=0
+doctor_verbose=0
 case ${1-} in
   -h|--help)
     usage
     exit 0
+    ;;
+  doctor|--doctor)
+    doctor_mode=1
+    shift
+    case ${1-} in
+      --verbose)
+        doctor_verbose=1
+        shift
+        ;;
+    esac
+    [ "$#" -eq 0 ] || {
+      usage >&2
+      fail 'doctor accepts only the optional --verbose flag'
+    }
     ;;
   --)
     argument_mode=1
@@ -52,7 +81,7 @@ case ${1-} in
     ;;
 esac
 
-[ "$#" -gt 0 ] || {
+[ "$doctor_mode" -eq 1 ] || [ "$#" -gt 0 ] || {
   usage >&2
   exit 64
 }
@@ -89,10 +118,22 @@ config_file=$(find_config) || config_file=
 if [ -n "$config_file" ]; then
   # The project config is trusted shell syntax; see references/configuration.md.
   # shellcheck disable=SC1090
-  . "$config_file"
+  if [ "$doctor_mode" -eq 1 ] && [ "$doctor_verbose" -eq 0 ]; then
+    if ! sh -n "$config_file" >/dev/null 2>&1; then
+      doctor_fail 'configuration: invalid'
+      exit 64
+    fi
+    . "$config_file" >/dev/null 2>&1
+  else
+    . "$config_file"
+  fi
   config_status=$?
   if [ "$config_status" -ne 0 ]; then
-    printf 'dev-exec: failed to load %s\n' "$config_file" >&2
+    if [ "$doctor_mode" -eq 1 ] && [ "$doctor_verbose" -eq 0 ]; then
+      doctor_fail 'configuration: invalid'
+    else
+      printf 'dev-exec: failed to load %s\n' "$config_file" >&2
+    fi
     exit "$config_status"
   fi
 fi
@@ -129,18 +170,38 @@ esac
 
 remote_shell=${DEV_EXEC_SHELL:-/bin/sh}
 
+if [ "$doctor_mode" -eq 1 ]; then
+  doctor_say 'configuration: valid'
+fi
+
 if [ -n "${DEV_EXEC_MUTAGEN_SESSION:-}" ]; then
   case $DEV_EXEC_MUTAGEN_SESSION in
     -*) fail 'DEV_EXEC_MUTAGEN_SESSION must not begin with a hyphen' ;;
   esac
 
   mutagen_bin=${DEV_EXEC_MUTAGEN_BIN:-mutagen}
-  "$mutagen_bin" sync flush -- "$DEV_EXEC_MUTAGEN_SESSION"
+  if [ "$doctor_mode" -eq 1 ] && [ "$doctor_verbose" -eq 0 ]; then
+    "$mutagen_bin" sync flush -- "$DEV_EXEC_MUTAGEN_SESSION" >/dev/null 2>&1
+  else
+    "$mutagen_bin" sync flush -- "$DEV_EXEC_MUTAGEN_SESSION"
+  fi
   sync_status=$?
-  [ "$sync_status" -eq 0 ] || exit "$sync_status"
+  if [ "$sync_status" -ne 0 ]; then
+    if [ "$doctor_mode" -eq 1 ]; then
+      doctor_fail 'synchronization preflight: failed'
+    fi
+    exit "$sync_status"
+  fi
+  if [ "$doctor_mode" -eq 1 ]; then
+    doctor_say 'synchronization preflight: passed'
+  fi
+elif [ "$doctor_mode" -eq 1 ]; then
+  doctor_say 'source freshness: not verified (no synchronization preflight configured)'
 fi
 
-if [ "$argument_mode" -eq 0 ] && [ "$#" -eq 1 ]; then
+if [ "$doctor_mode" -eq 1 ]; then
+  command_text=:
+elif [ "$argument_mode" -eq 0 ] && [ "$#" -eq 1 ]; then
   command_text=$1
 else
   command_text=
@@ -166,6 +227,21 @@ if ! quoted_command=$(shell_quote "$command_text"); then
   fail 'failed to quote the remote command'
 fi
 remote_invocation="cd $quoted_dir && exec $quoted_shell -lc $quoted_command"
+
+if [ "$doctor_mode" -eq 1 ]; then
+  if [ "$doctor_verbose" -eq 1 ]; then
+    ssh -T -o BatchMode=yes "$DEV_EXEC_HOST" "$remote_invocation"
+  else
+    ssh -T -o BatchMode=yes "$DEV_EXEC_HOST" "$remote_invocation" >/dev/null 2>&1
+  fi
+  execution_status=$?
+  if [ "$execution_status" -eq 0 ]; then
+    doctor_say 'authoritative execution: ready'
+  else
+    doctor_fail 'authoritative execution: failed'
+  fi
+  exit "$execution_status"
+fi
 
 ssh "$DEV_EXEC_HOST" "$remote_invocation"
 exit $?

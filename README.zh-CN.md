@@ -22,17 +22,75 @@ Skill 的核心原则是：轻量的源码检查和编辑留在 AI 所在环境�
 
 英文文档：[README.md](README.md)
 
+## 最短路径：一条命令完成 Relay 部署
+
+对于“非管理员 Mac + Claude Code 运行在 VM”的场景，`dev-relay setup`
+可以一次完成 relay、VM 命令 wrapper、Claude Skill 安装和项目本地配置。
+
+执行前只需要确认两个前置条件：
+
+1. Mac 已经可以免交互执行 `ssh VM_ALIAS true`。
+2. 当前编辑能通过共享 checkout 或可靠同步机制到达权威 checkout。如果是
+   两个独立 checkout 并使用 Mutagen，请先在 VM 中创建 session，并成功
+   flush 一次。
+
+然后在 Mac 的 canonical checkout 中执行：
+
+```sh
+~/code/remote-dev-execution/scripts/dev-relay setup VM_ALIAS \
+  --client claude \
+  --project /absolute/path/to/project/in/agent-environment \
+            /absolute/path/to/project/in/authoritative-environment \
+  --shell /bin/zsh \
+  --mutagen MUTAGEN_SESSION
+```
+
+所有大写值都必须替换成自己的配置。只有在双方使用同一个共享 checkout，
+或其他同步流程会在每次验证前完成时，才省略 `--mutagen MUTAGEN_SESSION`。使用
+`--client codex` 安装 Codex，使用 `--client both` 同时安装两者。
+
+两条项目路径和源码新鲜度策略是仅有的项目级必选项。setup 不会猜测它们，
+因为猜错会让测试看似成功，实际却使用旧源码或无关 checkout。
+
+setup 完成后重启 Claude/Codex。在 Agent 环境的项目目录中执行：
+
+```sh
+~/.local/share/remote-dev-execution/dev-exec doctor
+```
+
+只有源码新鲜度已经确认，并且 doctor 输出
+`authoritative execution: ready`，才能开始测试。如果看到
+`source freshness: not verified`，说明执行通道已可用，但尚不能证明权威
+checkout 包含当前修改；先确认共享 checkout 或外部同步，再运行测试。
+
+随后用不暴露底层拓扑的提示词调用 Skill：
+
+```text
+Use $remote-dev-execution to validate delegated execution and run the smallest relevant project check without exposing infrastructure details.
+```
+
+如果旧版本 setup 只安装了 wrapper，可以在 Mac 上补装 VM 中的 Skill，
+然后重启 Agent：
+
+```sh
+~/code/remote-dev-execution/scripts/dev-relay install-skill --client claude
+```
+
+完整英文提示词和可观察验收标准见
+[Agent 执行验证](references/agent-validation.md)。
+
 ## 仓库内容
 
 - `SKILL.md`：Codex 或 Claude 激活 Skill 后读取的核心规则。
-- `scripts/dev-exec`：查找项目配置、可选刷新 Mutagen、通过 SSH 执行命令，
-  并保留 stdout、stderr 和退出码。
+- `scripts/dev-exec`：提供脱敏 doctor、查找项目配置、可选刷新 Mutagen、
+  通过 SSH 执行命令，并保留 stdout、stderr 和退出码。
 - `scripts/dev-relay`：macOS 非管理员用户态 `sshd` 和由 Mac 发起的反向
   SSH 隧道。
 - `scripts/install-skill.sh`：安全维护 canonical Git checkout，并为 Claude
   Code 或 Codex 建立用户级软链接。
 - `references/configuration.md`：`.dev-exec.env`、变量优先级和源码新鲜度。
 - `references/reverse-relay.md`：反向 relay 的安全模型、手动配置和排错。
+- `references/agent-validation.md`：隐私安全的 Agent 提示词和委派执行验收标准。
 - `assets/*.example`：只包含占位符的配置模板。
 
 本仓库是 Skill 的 canonical copy。不要把项目绝对路径、真实主机名、用户
@@ -160,7 +218,7 @@ DEV_EXEC_SHELL=/bin/zsh
 
 ```sh
 DEV_EXEC_SHELL=/bin/sh \
-  ~/code/remote-dev-execution/scripts/dev-exec -- npm test
+  ~/code/remote-dev-execution/scripts/dev-exec doctor
 ```
 
 变量完整说明见 [references/configuration.md](references/configuration.md)。
@@ -186,7 +244,6 @@ Host dev-machine
 
 ```sh
 ssh dev-machine true
-ssh dev-machine 'uname -a'
 ```
 
 如果出现密码提示、host-key 错误或 alias 不存在，先修复普通 SSH。不要通过
@@ -210,8 +267,11 @@ chmod 600 .dev-exec.env
 普通命令使用参数形式：
 
 ```sh
+~/code/remote-dev-execution/scripts/dev-exec doctor
 ~/code/remote-dev-execution/scripts/dev-exec -- npm test -- --runInBand
 ```
+
+doctor 报告执行失败或源码新鲜度尚未确认时，不要运行测试。
 
 需要管道、重定向或 shell 展开的命令，使用一个带引号的字符串：
 
@@ -307,6 +367,7 @@ ssh dev-vm true
 
 ```sh
 ~/code/remote-dev-execution/scripts/dev-relay setup dev-vm \
+  --client claude \
   --project /absolute/path/to/project/on/vm \
            /absolute/path/to/project/on/mac \
   --shell /bin/zsh \
@@ -316,6 +377,7 @@ ssh dev-vm true
 所有 alias、路径、shell 和 Mutagen session 都是示例，必须替换。`--project`
 是可选的，但提供后会在 VM 项目中生成 `.dev-exec.env`，并尽量写入该项目
 checkout 的 `.git/info/exclude`。不提供时，需要在 VM 手动创建配置文件。
+`--client` 会把 Skill 安装到 Agent 实际运行的环境中。
 
 setup 会在不使用管理员权限的情况下：
 
@@ -325,11 +387,21 @@ setup 会在不使用管理员权限的情况下：
 4. 在 VM 安装受管理的 SSH alias 和精确的 relay host-key 信任。
 5. 在 VM 安装 `~/.local/share/remote-dev-execution/dev-exec`，只有在
    `~/.local/bin/dev-exec` 未被占用时才创建链接。
-6. 执行一次 VM 到 Mac 的端到端验证。
+6. 为指定 Agent 安装 canonical Git checkout 和用户级 Skill 软链接。
+7. 执行一次 VM 到 Mac 的端到端验证。
 
 setup 只负责连通性，不会自动同步两个独立 checkout，除非设置了 `--mutagen`
 或其他可靠同步机制。relay 活跃时，VM 可以以当前 Mac 用户打开 shell，
 并不局限于某个项目目录，所以只应连接可信 VM。
+
+如果 relay 由旧版本创建，可以只补装 Agent Skill，不需要重建 relay：
+
+```sh
+~/code/remote-dev-execution/scripts/dev-relay install-skill --client claude
+```
+
+团队内部仓库或固定 release 可以在两条命令中增加 `--repo` 和 `--ref`。
+安装后重启 Agent，让它重新发现 Skill。
 
 ### 启动、查看和停止
 
@@ -352,17 +424,17 @@ setup 只负责连通性，不会自动同步两个独立 checkout，除非设�
 
 ### 在 VM 验证回程
 
-setup 通常已经安装了 alias，可以先明确测试方向：
+setup 已经做过底层端到端检查。日常由用户或 Agent 验证时，在 VM 项目中
+运行脱敏的 doctor：
 
 ```sh
-ssh rde-mac-dev 'uname -a'
+~/.local/share/remote-dev-execution/dev-exec doctor
 ```
 
-然后在 VM 项目中执行权威测试：
-
-```sh
-~/.local/share/remote-dev-execution/dev-exec -- npm test
-```
+doctor 能证明 wrapper 到达了可信项目配置所声明的环境，但不会独立判断该
+目标是否真的具备“权威”身份，也无法判断未配置同步的独立 checkout 是否
+最新。先审核配置并确认源码新鲜度，再运行项目测试。原始 `ssh` 探针只用于
+用户批准的详细排错，因为它可能暴露基础设施信息。
 
 如果 setup 没有使用 `--project`，在 VM 项目中手动写入：
 
@@ -412,6 +484,7 @@ printf '%s\n' \
 chmod 600 .dev-exec.env
 
 ssh dev-machine true
+~/code/remote-dev-execution/scripts/dev-exec doctor
 ~/code/remote-dev-execution/scripts/dev-exec -- npm test
 ```
 
@@ -430,6 +503,7 @@ printf '%s\n' \
   'DEV_EXEC_MUTAGEN_SESSION=project-sync' > .dev-exec.env
 chmod 600 .dev-exec.env
 
+~/code/remote-dev-execution/scripts/dev-exec doctor
 ~/code/remote-dev-execution/scripts/dev-exec -- npm test
 ```
 
@@ -441,13 +515,14 @@ wrapper 每次执行前都会 flush，flush 失败则不会运行测试。
 # Mac 上：建立 relay，并自动生成 VM 项目配置。
 ssh dev-vm true
 ~/code/remote-dev-execution/scripts/dev-relay setup dev-vm \
+  --client claude \
   --project /absolute/path/to/project/on/vm \
            /absolute/path/to/project/on/mac \
   --shell /bin/zsh \
   --mutagen project-sync
 
-# VM 项目中：验证回程并运行 Mac 侧测试。
-ssh rde-mac-dev 'uname -a'
+# VM 项目中：验证委派执行，然后运行测试。
+~/.local/share/remote-dev-execution/dev-exec doctor
 ~/.local/share/remote-dev-execution/dev-exec -- npm test
 ```
 
@@ -460,6 +535,9 @@ ssh rde-mac-dev 'uname -a'
 | SSH 要求输入密码 | 先修复普通 SSH alias 和 keychain；wrapper 本身是非交互的。 |
 | 远程目录不存在 | 确认 `DEV_EXEC_DIR` 是权威机器上的绝对路径。 |
 | Mutagen flush 失败 | 执行 `mutagen sync list` 和 `mutagen sync flush -- SESSION`，不要绕过检查。 |
+| doctor 显示 `source freshness: not verified` | 先确认共享 checkout 或完成外部同步；仅连通不能证明测试使用了当前源码。 |
+| setup 发现未托管的 `.dev-exec.env` | 保留文件并去掉 `--project` 重跑；或者审核后把它移为备份，再让 setup 生成。脚本不会自动覆盖。 |
+| Agent 找不到 Skill | 用匹配的 `--client` 运行 `dev-relay install-skill`，然后重启 Agent。 |
 | relay 已停止 | Mac 上运行 `dev-relay status`，然后 `stop` 再 `start`。 |
 | VM host-key 错误 | 重新运行 setup 或 `print-vm-config`，安装精确生成的 trust 条目，不要关闭严格校验。 |
 | debugger 无法连接 | 只配置需要的 `DEV_RELAY_DEBUG_PORTS`，让服务监听 loopback，然后重启 relay。 |
@@ -511,8 +589,9 @@ git grep -n -I -E \
 
 ```sh
 sh -n scripts/dev-exec scripts/dev-relay scripts/install-skill.sh \
-  tests/test-dev-exec.sh tests/test-install-skill.sh
+  tests/test-dev-exec.sh tests/test-dev-relay.sh tests/test-install-skill.sh
 tests/test-dev-exec.sh
+tests/test-dev-relay.sh
 tests/test-install-skill.sh
 ```
 
@@ -522,4 +601,5 @@ tests/test-install-skill.sh
 
 - [配置参考](references/configuration.md)
 - [macOS 非管理员反向 relay 参考](references/reverse-relay.md)
+- [Agent 执行验证](references/agent-validation.md)
 - [MIT License](LICENSE)
