@@ -45,9 +45,45 @@ Skill 的核心原则是：轻量的源码检查和编辑留在 AI 所在环境�
   --mutagen MUTAGEN_SESSION
 ```
 
-所有大写值都必须替换成自己的配置。只有在双方使用同一个共享 checkout，
-或其他同步流程会在每次验证前完成时，才省略 `--mutagen MUTAGEN_SESSION`。使用
-`--client codex` 安装 Codex，使用 `--client both` 同时安装两者。
+### 参数和值的含义
+
+| 值或参数 | 是否必需 | 应该填写什么 |
+| --- | --- | --- |
+| `VM_ALIAS` | 首次 setup 必需 | Mac 上已经存在、用于连接 Agent 环境的 SSH alias。必须先能免交互执行 `ssh VM_ALIAS true`。 |
+| `--project` 第一个值 | 使用 `--project` 时必需 | Agent 环境中的项目 checkout 绝对路径，目录必须已经存在。 |
+| `--project` 第二个值 | 使用 `--project` 时必需 | 权威环境中的项目 checkout 绝对路径，构建、测试、服务和调试会在这里运行。 |
+| `--client CLIENT` | 可选，首次 setup 推荐填写 | 只能填写 `claude`、`codex` 或 `both`，用于在 Agent 环境安装对应 Skill。安装后重启 Agent。 |
+| `--shell SHELL` | 可选 | 权威环境中实际存在的 shell，通常是 `/bin/zsh` 或 `/bin/sh`。省略时优先使用当前用户 shell，否则 `dev-exec` 默认使用 `/bin/sh`。 |
+| `--mutagen SESSION` | 可选 | `dev-exec` 所在环境中已经存在的 Mutagen session 名称。它不是路径或主机名，并且只能和 `--project` 一起使用。 |
+
+`--client` 只决定安装哪个 Agent Skill，不决定命令去哪里执行。Claude Code
+运行在 Agent 环境时填写 `claude`，Codex 填写 `codex`，两个客户端都运行时
+填写 `both`。如果正确的 Skill 软链接已经安装，或者本次只配置 relay 和
+wrapper，可以省略；之后也可以使用 `dev-relay install-skill` 单独补装。
+
+`--mutagen` 不会安装 Mutagen，也不会创建 session。两个 checkout 分离并
+使用 Mutagen 时，在 Agent 环境执行下面的命令，填写 `list` 中显示的 session
+名称：
+
+```sh
+mutagen sync list
+mutagen sync flush -- MUTAGEN_SESSION
+```
+
+之后每次 `dev-exec` 都会先 flush 该 session；flush 失败时不会运行项目命令。
+只有双方使用同一个共享 checkout，或者其他同步检查会在每次验证前完成时，
+才能省略 `--mutagen`。两个独立 checkout 没有可靠同步时，不得运行测试。
+
+| 场景 | `--client` | `--mutagen` |
+| --- | --- | --- |
+| Claude 首次 setup，两个 checkout 通过 Mutagen 同步 | `claude` | 已存在的 session 名称 |
+| Claude 首次 setup，双方使用同一个共享 checkout | `claude` | 省略 |
+| Skill 已安装，只更新当前项目映射 | 省略 | 仅当该项目使用 Mutagen 时填写 |
+| Agent 环境同时运行 Claude 和 Codex | `both` | 根据 checkout 同步方式决定 |
+
+团队内部仓库或固定 release 可以增加 `--repo REPOSITORY` 和
+`--ref BRANCH_OR_TAG_OR_COMMIT`。在 `setup` 中使用这两个参数时必须同时提供
+`--client`，并确保指定 ref 已经包含需要安装的版本。
 
 两条项目路径和源码新鲜度策略是仅有的项目级必选项。setup 不会猜测它们，
 因为猜错会让测试看似成功，实际却使用旧源码或无关 checkout。

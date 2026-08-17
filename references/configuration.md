@@ -4,6 +4,7 @@ Use a project-local `.dev-exec.env` to describe the authoritative development en
 
 ## Contents
 
+- [Relay Setup Options](#relay-setup-options)
 - [Lookup and Precedence](#lookup-and-precedence)
 - [Variables](#variables)
 - [File Format and Trust](#file-format-and-trust)
@@ -12,6 +13,33 @@ Use a project-local `.dev-exec.env` to describe the authoritative development en
 - [Source Freshness and Ownership](#source-freshness-and-ownership)
 - [Mutagen Preflight](#mutagen-preflight)
 - [Troubleshooting](#troubleshooting)
+
+## Relay Setup Options
+
+Use the setup command on the authoritative Mac when a reverse relay manages the Agent environment:
+
+```sh
+dev-relay setup VM_ALIAS \
+  --client claude \
+  --project AGENT_PROJECT_DIR AUTHORITATIVE_PROJECT_DIR \
+  --shell /bin/zsh \
+  --mutagen MUTAGEN_SESSION
+```
+
+| Argument | Required? | Value and effect |
+| --- | --- | --- |
+| `VM_ALIAS` | Required for first setup | Existing Mac-side SSH alias for the Agent environment. It is stored in relay configuration. |
+| `AGENT_PROJECT_DIR` | Required with `--project` | Existing absolute checkout path in the Agent environment. Setup writes `.dev-exec.env` here. |
+| `AUTHORITATIVE_PROJECT_DIR` | Required with `--project` | Absolute checkout path used for delegated commands in the authoritative environment. It becomes `DEV_EXEC_DIR`. |
+| `--client CLIENT` | Optional for `setup` | `CLIENT` must be `claude`, `codex`, or `both`. Installs or updates the canonical Skill checkout and selected user-level links in the Agent environment. Restart the Agent afterward. Standalone `install-skill` defaults to `claude`. |
+| `--shell SHELL` | Optional; requires `--project` | Shell executable used for delegated commands. Setup uses the current user's shell when available; `dev-exec` otherwise defaults to `/bin/sh`. |
+| `--mutagen SESSION` | Optional; requires `--project` | Existing Mutagen session available where `dev-exec` runs. Setup stores its name as `DEV_EXEC_MUTAGEN_SESSION`; every execution flushes it first. |
+| `--repo REPOSITORY` | Optional; requires `--client` during `setup` | Git repository used for the canonical Skill checkout. |
+| `--ref REF` | Optional; requires `--client` during `setup` | Branch, tag, or commit installed from the Skill repository. Defaults to `main`. |
+
+`--client` does not select the authoritative destination; `DEV_EXEC_HOST` and `DEV_EXEC_DIR` do that. Omit `--client` only when the required Skill link is already installed or the Agent does not need this Skill.
+
+`--mutagen` does not create a session or install Mutagen. Select an existing session name with `mutagen sync list` in the Agent environment and verify it once with `mutagen sync flush -- SESSION`. Omit it for a shared checkout or another synchronization mechanism that completes before every validation. Without either, source freshness remains unverified and project tests must stop.
 
 ## Lookup and Precedence
 

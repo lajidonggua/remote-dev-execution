@@ -96,6 +96,9 @@ To generate a project configuration in the same operation, provide both checkout
   --mutagen workspace
 ```
 
+See [Relay Setup Options](configuration.md#relay-setup-options) for every value,
+accepted `--client` choice, and the rules for omitting `--mutagen`.
+
 The `--project` mapping writes a marked `.dev-exec.env` in the VM project, adds it to Git's local exclude when possible, and can be repeated safely. It refuses to replace a symlink or an unmarked existing file. `--shell` and `--mutagen` are optional. Both paths remain explicit because setup cannot safely infer which Mac checkout is authoritative.
 
 If setup reports an unmanaged project configuration, it has stopped before changing relay state. Keep the existing file and rerun without `--project` when it is already correct, or review and move it to a backup before asking setup to generate a managed file.

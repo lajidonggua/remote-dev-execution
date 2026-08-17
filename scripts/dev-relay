@@ -28,6 +28,23 @@ Usage:
 Run a loopback-only user sshd on macOS and expose it to an SSH-accessible VM
 through a Mac-initiated reverse tunnel. No administrator privileges required.
 
+Setup values and options:
+  VM_HOST              Existing Mac-side SSH alias for the VM.
+  --project VM_PROJECT_DIR MAC_PROJECT_DIR
+                       Existing absolute Agent and authoritative checkout
+                       paths. Both values are required together.
+  --shell SHELL        Shell executable in the authoritative environment.
+  --mutagen SESSION    Existing Mutagen session where dev-exec runs; requires
+                       --project. This does not install or create Mutagen.
+  --client NAME        Install the Skill for claude, codex, or both in the VM.
+                       Optional for setup; defaults to claude for install-skill.
+                       Restart the Agent after installation.
+  --repo REPOSITORY    Skill Git repository installed in the VM.
+  --ref REF            Skill branch, tag, or commit (default: main).
+
+Use --mutagen only for an existing session. Omit it for a shared checkout or
+when another synchronization preflight completes before every validation.
+
 Configuration:
   DEV_RELAY_CONFIG, or
   ~/.config/remote-dev-execution/relay.env

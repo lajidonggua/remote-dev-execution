@@ -48,10 +48,48 @@ Then run on the Mac from this canonical checkout:
   --mutagen MUTAGEN_SESSION
 ```
 
-Replace every uppercase placeholder. Omit `--mutagen MUTAGEN_SESSION` only
-when both environments use the same shared checkout or another synchronization
-preflight is completed before each validation. `--client codex` installs the
-Codex link; `--client both` installs both links in the VM.
+### Setup values and options
+
+| Value or option | Required? | What to enter |
+| --- | --- | --- |
+| `VM_ALIAS` | Yes on first setup | An existing SSH alias on the Mac that reaches the Agent environment. `ssh VM_ALIAS true` must already succeed without interaction. |
+| First `--project` value | Required when using `--project` | The absolute path to the checkout in the Agent environment. The directory must already exist. |
+| Second `--project` value | Required when using `--project` | The absolute path to the authoritative checkout where builds, tests, services, and debugging run. |
+| `--client CLIENT` | Optional, recommended on first setup | `claude`, `codex`, or `both`. It installs this Skill in the Agent environment. Restart that Agent after installation. |
+| `--shell SHELL` | Optional | An executable shell in the authoritative environment, usually `/bin/zsh` or `/bin/sh`. Setup uses the current user's shell when available; `dev-exec` otherwise defaults to `/bin/sh`. |
+| `--mutagen SESSION` | Optional | The exact name of an existing Mutagen session available where `dev-exec` runs. It requires `--project`; it is a session name, not a path or host. |
+
+`--client` controls Skill installation only; it does not choose the execution
+destination. Use `claude` when Claude Code runs in the Agent environment,
+`codex` for Codex, and `both` when both clients run there. Omit it when the
+correct Skill link is already installed or when setup should configure only the
+relay and wrapper. You can install it later with `dev-relay install-skill`.
+
+`--mutagen` does not install Mutagen or create a session. For separate
+checkouts using Mutagen, run the following in the Agent environment and use the
+session name shown by `list`:
+
+```sh
+mutagen sync list
+mutagen sync flush -- MUTAGEN_SESSION
+```
+
+Every later `dev-exec` call flushes that session before delegated execution and
+does not run the project command if the flush fails. Omit `--mutagen` only when
+both environments use the same shared checkout or another synchronization
+preflight completes before every validation. Separate checkouts with no
+verified synchronization must not be tested.
+
+| Scenario | `--client` | `--mutagen` |
+| --- | --- | --- |
+| First setup for VM-hosted Claude, separate checkouts synchronized by Mutagen | `claude` | Existing session name |
+| First setup for VM-hosted Claude, one shared checkout | `claude` | Omit |
+| Skill is already installed; project mapping is being refreshed | Omit | Use only when this project uses Mutagen |
+| Claude and Codex both run in the Agent environment | `both` | Depends on checkout synchronization |
+
+For an internal Skill repository or pinned release, add `--repo REPOSITORY` and
+`--ref BRANCH_OR_TAG_OR_COMMIT`. During `setup`, these options require
+`--client`; the selected ref must already contain the version to install.
 
 The two project paths and the source-freshness strategy are the only required
 project choices. Setup does not guess them because a wrong guess can produce a

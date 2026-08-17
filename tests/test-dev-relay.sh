@@ -15,6 +15,11 @@ ssh_stdin=$test_root/ssh-stdin
 relay_config=$test_root/relay.env
 mkdir -p "$test_home" "$fake_bin"
 
+help_output=$("$relay" --help)
+printf '%s\n' "$help_output" | grep -Fq -- '--client NAME'
+printf '%s\n' "$help_output" | grep -Fq -- '--mutagen SESSION'
+printf '%s\n' "$help_output" | grep -Fq 'does not install or create Mutagen'
+
 cat > "$fake_ssh" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$@" > "$FAKE_SSH_ARGS"
