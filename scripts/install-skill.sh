@@ -153,16 +153,21 @@ checkout_ref() {
   fi
 }
 
+target_matches_root() {
+  target_name=$1
+  [ -L "$target_name" ] || return 1
+  [ -d "$root_dir" ] && [ ! -L "$root_dir" ] || return 1
+  target_real=$(CDPATH= cd -P "$target_name" 2>/dev/null && pwd -P || true)
+  root_real=$(CDPATH= cd -P "$root_dir" 2>/dev/null && pwd -P || true)
+  [ -n "$target_real" ] && [ "$target_real" = "$root_real" ]
+}
+
 preflight_target() {
   target_name=$1
+  target_matches_root "$target_name" && return 0
   if [ -L "$target_name" ]; then
     [ -e "$target_name" ] ||
       fail "$EX_CONFIG" "Skill target is a broken symlink: $target_name"
-    if [ -d "$root_dir" ] && [ ! -L "$root_dir" ]; then
-      target_real=$(CDPATH= cd -P "$target_name" 2>/dev/null && pwd -P || true)
-      root_real=$(CDPATH= cd -P "$root_dir" 2>/dev/null && pwd -P || true)
-      [ -n "$target_real" ] && [ "$target_real" = "$root_real" ] && return 0
-    fi
     fail "$EX_CONFIG" "Skill target already points somewhere else: $target_name"
   fi
   [ ! -e "$target_name" ] ||
@@ -171,6 +176,14 @@ preflight_target() {
 
 install_target() {
   target_name=$1
+  if target_matches_root "$target_name"; then
+    if [ "$dry_run" -eq 1 ]; then
+      say "would keep existing Skill link $target_name -> $root_dir"
+    else
+      say "Skill link already points to canonical checkout: $target_name"
+    fi
+    return 0
+  fi
   preflight_target "$target_name"
   if [ "$dry_run" -eq 1 ]; then
     say "would link $target_name -> $root_dir"

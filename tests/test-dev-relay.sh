@@ -18,6 +18,7 @@ mkdir -p "$test_home" "$fake_bin"
 help_output=$("$relay" --help)
 printf '%s\n' "$help_output" | grep -Fq -- '--client NAME'
 printf '%s\n' "$help_output" | grep -Fq -- '--mutagen SESSION'
+printf '%s\n' "$help_output" | grep -Fq -- '--clear-mutagen'
 printf '%s\n' "$help_output" | grep -Fq 'does not install or create Mutagen'
 
 cat > "$fake_ssh" <<'EOF'
@@ -60,6 +61,28 @@ if HOME="$test_home" \
   FAKE_SSH_STDIN="$ssh_stdin" \
     "$relay" install-skill --client invalid >/dev/null 2>&1; then
   printf '%s\n' 'dev-relay unexpectedly accepted an invalid Skill client' >&2
+  exit 1
+fi
+[ ! -s "$ssh_args" ]
+
+: > "$ssh_args"
+if HOME="$test_home" \
+  DEV_RELAY_CONFIG="$relay_config" \
+  FAKE_SSH_ARGS="$ssh_args" \
+  FAKE_SSH_STDIN="$ssh_stdin" \
+    "$relay" setup test-vm --mutagen '' >/dev/null 2>&1; then
+  printf '%s\n' 'dev-relay setup unexpectedly accepted an empty Mutagen session' >&2
+  exit 1
+fi
+[ ! -s "$ssh_args" ]
+
+: > "$ssh_args"
+if HOME="$test_home" \
+  DEV_RELAY_CONFIG="$relay_config" \
+  FAKE_SSH_ARGS="$ssh_args" \
+  FAKE_SSH_STDIN="$ssh_stdin" \
+    "$relay" setup test-vm --clear-mutagen >/dev/null 2>&1; then
+  printf '%s\n' 'dev-relay setup unexpectedly accepted --clear-mutagen without --project' >&2
   exit 1
 fi
 [ ! -s "$ssh_args" ]

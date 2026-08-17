@@ -7,7 +7,7 @@ AI editing environment (VM, container, or secondary workspace)
         |
         | inspect and edit source locally
         v
-dev-exec / SSH / optional Mutagen sync
+dev-exec / SSH / recommended Mutagen sync for separate checkouts
         |
         v
 Authoritative development environment (Mac, workstation, or build host)
@@ -24,7 +24,7 @@ VM cannot connect inbound to the Mac.
 
 **中文文档:** [README.zh-CN.md](README.zh-CN.md)
 
-## Quick Start: One Relay Setup
+## Quick Start: Relay Setup and Optional Sync Setup
 
 For a non-admin Mac plus a VM-hosted Claude Code session, `dev-relay setup`
 can provision the relay, install the VM command wrapper, install this Skill for
@@ -33,9 +33,8 @@ Claude, and generate the project's ignored configuration in one operation.
 Confirm these two prerequisites first:
 
 1. The Mac can already run `ssh VM_ALIAS true` without a password prompt.
-2. The authoritative checkout receives current edits through a shared checkout
-   or a verified synchronization mechanism. For separate checkouts using
-   Mutagen, create and successfully flush the session in the VM first.
+2. Both project checkout paths are known. For separate checkouts, complete the
+   Mutagen step below before running any project test.
 
 Then run on the Mac from this canonical checkout:
 
@@ -44,8 +43,7 @@ Then run on the Mac from this canonical checkout:
   --client claude \
   --project /absolute/path/to/project/in/agent-environment \
             /absolute/path/to/project/in/authoritative-environment \
-  --shell /bin/zsh \
-  --mutagen MUTAGEN_SESSION
+  --shell /bin/zsh
 ```
 
 ### Setup values and options
@@ -58,6 +56,7 @@ Then run on the Mac from this canonical checkout:
 | `--client CLIENT` | Optional, recommended on first setup | `claude`, `codex`, or `both`. It installs this Skill in the Agent environment. Restart that Agent after installation. |
 | `--shell SHELL` | Optional | An executable shell in the authoritative environment, usually `/bin/zsh` or `/bin/sh`. Setup uses the current user's shell when available; `dev-exec` otherwise defaults to `/bin/sh`. |
 | `--mutagen SESSION` | Optional | The exact name of an existing Mutagen session available where `dev-exec` runs. It requires `--project`; it is a session name, not a path or host. |
+| `--clear-mutagen` | Optional | Explicitly remove the managed Mutagen session and executable settings from an existing generated project config. It requires `--project` and cannot be combined with `--mutagen`. |
 
 `--client` controls Skill installation only; it does not choose the execution
 destination. Use `claude` when Claude Code runs in the Agent environment,
@@ -65,24 +64,40 @@ destination. Use `claude` when Claude Code runs in the Agent environment,
 correct Skill link is already installed or when setup should configure only the
 relay and wrapper. You can install it later with `dev-relay install-skill`.
 
-`--mutagen` does not install Mutagen or create a session. For separate
-checkouts using Mutagen, run the following in the Agent environment and use the
-session name shown by `list`:
+`--mutagen` selects an existing session; it does not install Mutagen or create
+one. When no session exists yet, omit that option during the first relay setup.
+Then, from the generated Agent project, run:
 
 ```sh
-mutagen sync list
-mutagen sync flush -- MUTAGEN_SESSION
+~/code/remote-dev-execution/scripts/setup-mutagen.sh \
+  --install \
+  --name project-sync
 ```
 
-Every later `dev-exec` call flushes that session before delegated execution and
-does not run the project command if the flush fails. Omit `--mutagen` only when
-both environments use the same shared checkout or another synchronization
-preflight completes before every validation. Separate checkouts with no
-verified synchronization must not be tested.
+This performs a user-level installation when necessary, creates a
+`two-way-safe` session from the existing project mapping, updates the ignored
+`.dev-exec.env`, and runs doctor. Every later `dev-exec` call flushes and
+health-checks the session before delegated execution. Disconnected endpoints,
+conflicts, filesystem problems, or a failed flush stop the project command
+before SSH.
+
+When a reviewed session already exists, pass its name with
+`--mutagen EXISTING_SESSION` during relay setup instead. Omit Mutagen entirely
+only for a true shared checkout or another synchronization preflight with a
+blocking completion check. Separate checkouts with no verified synchronization
+must not be tested.
+
+When rerunning setup for an existing generated project config, the current
+Mutagen session and executable settings are preserved unless `--mutagen` replaces
+the session or `--clear-mutagen` explicitly removes them. This prevents a routine
+relay refresh from silently disabling the source-freshness gate. Use
+`--clear-mutagen` only after confirming that the project now uses a shared
+checkout or another independently verified synchronization mechanism.
 
 | Scenario | `--client` | `--mutagen` |
 | --- | --- | --- |
-| First setup for VM-hosted Claude, separate checkouts synchronized by Mutagen | `claude` | Existing session name |
+| First setup for VM-hosted Claude, separate checkouts, no session yet | `claude` | Omit, then run `setup-mutagen.sh --install` in the Agent project |
+| First setup with an existing reviewed Mutagen session | `claude` | Existing session name |
 | First setup for VM-hosted Claude, one shared checkout | `claude` | Omit |
 | Skill is already installed; project mapping is being refreshed | Omit | Use only when this project uses Mutagen |
 | Claude and Codex both run in the Agent environment | `both` | Depends on checkout synchronization |
@@ -128,14 +143,20 @@ privacy-safe prompt and observable acceptance criteria.
 
 - `SKILL.md`: instructions loaded by Codex or Claude when the Skill is active.
 - `scripts/dev-exec`: project-aware command wrapper with a redacted doctor,
-  config lookup, optional Mutagen flush, SSH execution, and exit-status
-  preservation.
+  config lookup, Mutagen flush and health checks, SSH execution, and
+  exit-status preservation.
 - `scripts/dev-relay`: user-owned macOS `sshd` plus a Mac-initiated reverse
   SSH tunnel. It does not require administrator privileges.
 - `scripts/install-skill.sh`: safe canonical-checkout and user-level-link
   installer for Claude Code or Codex.
+- `scripts/install-mutagen.sh`: checksum-verified, no-admin Mutagen installer
+  for supported macOS and Linux environments.
+- `scripts/setup-mutagen.sh`: project-aware session creation, config update,
+  and integrated doctor check.
 - `references/configuration.md`: `.dev-exec.env` behavior and source-freshness
   rules.
+- `references/mutagen.md`: installation, session setup, ignores, health checks,
+  operation, and recovery.
 - `references/reverse-relay.md`: relay security model, manual setup, and
   troubleshooting details.
 - `references/agent-validation.md`: privacy-safe Agent prompt and observable
@@ -151,14 +172,15 @@ this repository.
 | Situation | Recommended path | Is Mutagen required? |
 | --- | --- | --- |
 | The VM can SSH directly to the authoritative machine and both use one shared checkout | Direct SSH + `.dev-exec.env` | No |
-| The VM and authoritative machine have separate checkouts | Direct SSH + a verified sync mechanism | Usually yes; Mutagen is optional if another sync is trusted |
+| The VM and authoritative machine have separate checkouts | Direct SSH + Mutagen | Recommended; another sync is valid only with a trusted blocking completion check |
 | The authoritative machine is a Mac and the VM cannot connect inbound to it | `dev-relay setup` reverse relay | Only when the checkouts are separate |
 | You need an interactive shell or terminal debugger | Relay/direct `ssh -t` | No, but source freshness still matters |
 
 Mutagen is a synchronization tool, not an SSH replacement. This Skill uses it
-only as a preflight: `dev-exec` runs `mutagen sync flush` and refuses to start
-SSH if the flush fails. The wrapper does not decide which side wins a sync
-conflict and does not silently copy generated changes back.
+as a mandatory preflight for separate checkouts: `dev-exec` flushes the session
+and then rejects conflicts or filesystem problems from structured session
+state before starting SSH. The wrapper does not decide which side wins a
+conflict.
 
 ## Requirements
 
@@ -176,7 +198,9 @@ conflict and does not silently copy generated changes back.
   SDKs, and runtime.
 - An SSH server reachable through the configured alias, unless the reverse
   relay is used.
-- Mutagen only when separate checkouts need Mutagen synchronization.
+- Mutagen in the environment where `dev-exec` runs when separate checkouts use
+  the recommended synchronization path. The bundled installer needs no
+  administrator access.
 
 ### Additional reverse-relay requirements
 
@@ -249,6 +273,50 @@ reproducible:
 
 Do not place a private deploy key, access token, or private repository path in
 the Skill files. Let the normal Git/SSH credential helper handle access.
+
+### Claude Code activation and prompts
+
+Claude Code uses the Skill description to decide whether the Skill is relevant to
+the current request. This is semantic, on-demand activation, not a command
+interceptor. Installing the Skill does not automatically install Mutagen, create
+`.dev-exec.env`, run `doctor`, or prevent Claude from running a command directly
+in the current workspace.
+
+Without an explicit workflow prompt, a request that clearly mentions remote
+validation may still activate the Skill, but activation is not guaranteed. A
+vague request such as "fix this and run the tests" can therefore result in a
+local test instead of an authoritative test. A successful local test is not
+evidence that the configured development environment was used.
+
+For predictable team behavior, add a project-level `CLAUDE.md` (or `AGENTS.md`)
+to the agent workspace and commit this policy with the project:
+
+```markdown
+For this workspace:
+
+- Treat the current workspace as the editing environment.
+- Run tests, builds, linters, services, and runtime checks only through the project's dev-exec wrapper.
+- Run `dev-exec doctor` before authoritative validation.
+- If execution or source freshness cannot be verified, stop and report the issue.
+- Never run environment-dependent commands directly in the current workspace.
+```
+
+Keep `.dev-exec.env` and other machine-specific values local and ignored; the
+policy above contains no hostnames, usernames, paths, operating systems, or
+transport details. Restart Claude Code, or start a new session, after installing
+or updating the Skill or changing its project instructions.
+
+For ordinary work, this short prompt is enough:
+
+```text
+Use the project's remote-dev-execution workflow for validation.
+```
+
+For a privacy-safe agent validation check, use the full prompt in
+[references/agent-validation.md](references/agent-validation.md). It requires a
+redacted `dev-exec doctor` check before the smallest relevant test and tells the
+agent to report only project-relevant results. Do not include infrastructure
+details in prompts just to force activation.
 
 ## Configure a Project
 
@@ -363,25 +431,62 @@ result.
 
 ### When Mutagen is useful
 
-Use Mutagen when the VM and Mac/workstation have separate checkouts and the VM
-is the editing side. Create and configure the session according to your team's
-sync policy. A generic two-endpoint example is:
+Use Mutagen when the Agent and authoritative environments have separate
+checkouts. It keeps Claude/Codex scans and edits on the Agent's local filesystem
+instead of a high-latency network mount.
+
+First create `.dev-exec.env` manually or with `dev-relay setup --project`.
+Then run this once from the Agent project:
 
 ```sh
-mutagen sync create \
-  --name=project-sync \
-  /absolute/path/to/project/on/vm \
-  ssh://dev-machine/absolute/path/to/project/on/authoritative-machine
+~/code/remote-dev-execution/scripts/setup-mutagen.sh \
+  --install \
+  --name project-sync
 ```
 
-Confirm that the session is healthy and flush it manually once:
+| Option | When to use it | Effect |
+| --- | --- | --- |
+| `--install` | Mutagen is not already available where `dev-exec` runs | Installs the pinned release into `~/.local/bin` without `sudo`. |
+| `--name SESSION` | Recommended for a stable team convention | Names the new session. If omitted, the helper derives a project-local name. |
+| `--ignore PATH` | A reproducible dependency, cache, or build directory must remain local | Adds one Mutagen ignore; repeat the option for additional paths. |
+| `--version VERSION` | The team has reviewed a different installer version | Selects the version used with `--install`. |
+| `--verbose` | User-approved setup troubleshooting only | Shows underlying Mutagen output, which may contain endpoints and paths. |
+
+The helper installs a pinned release into `~/.local/bin` without `sudo` when
+needed, verifies the official release checksum, derives both endpoints from
+the nearest `.dev-exec.env`, creates a `two-way-safe` session, writes the
+session setting back atomically, keeps the config in Git's local exclude, and
+runs doctor. It refuses to continue if `.dev-exec.env` is already tracked.
+
+To install without creating a session, run:
 
 ```sh
-mutagen sync list
-mutagen sync flush -- project-sync
+~/code/remote-dev-execution/scripts/install-mutagen.sh
+~/.local/bin/mutagen version
 ```
 
-Then add only the session name to the VM project's ignored `.dev-exec.env`:
+On an environment where Homebrew is already approved, use
+`brew install mutagen-io/mutagen/mutagen` instead. Install in the environment
+where `dev-exec` runs, not only in the authoritative environment.
+The Mutagen daemon starts on demand; normally there is no separate service to
+start. After a restart or network change, rerun doctor.
+
+VCS metadata and `.dev-exec.env` are always ignored. Add only reproducible,
+project-specific dependency or build directories that should remain local:
+
+```sh
+~/code/remote-dev-execution/scripts/setup-mutagen.sh \
+  --install \
+  --name project-sync \
+  --ignore node_modules \
+  --ignore build
+```
+
+Do not copy these ignores blindly, and never ignore source, lockfiles,
+migrations, fixtures, or reviewed generated artifacts. The authoritative
+environment must provision its own ignored dependencies.
+
+For an existing session, configure its exact name directly:
 
 ```sh
 DEV_EXEC_HOST=dev-machine
@@ -391,19 +496,28 @@ DEV_EXEC_MUTAGEN_SESSION=project-sync
 DEV_EXEC_MUTAGEN_BIN=mutagen
 ```
 
-Every `dev-exec` call now flushes `project-sync` before opening SSH. If the
-flush returns non-zero, the command is not started. Resolve the sync error
-instead of bypassing the preflight.
+Every `dev-exec` call now flushes the session and queries structured session
+health before opening SSH. It stops on a missing session, disconnected
+endpoints, conflicts, session errors, scan problems, transition problems, or a
+failed flush. This second
+check matters because a `two-way-safe` flush can complete while preserving a
+conflict.
 
-The flush runs where `dev-exec` runs. For a VM-hosted Claude session, install
-Mutagen and create the session in the VM, and make sure the VM can use the SSH
-alias required by that session. Installing Mutagen only on the Mac does not
-satisfy the VM-side preflight.
+Healthy doctor output contains `synchronization tool: available`,
+`synchronization session: available`, `synchronization health: healthy`, and
+`synchronization preflight: passed` before `authoritative execution: ready`.
+
+Mutagen and its session must exist where `dev-exec` runs. Installing it only in
+the authoritative environment does not satisfy the Agent-side preflight.
 
 Mutagen does not make remote generated files automatically safe to keep. Before
 running formatters, generators, migrations, installs, or snapshot updates,
 decide which checkout owns those changes and how they return to the editing
 environment.
+
+See [Mutagen synchronization](references/mutagen.md) for standalone
+installation, version pinning, existing-session configuration, ignores,
+operation, conflict recovery, and security details.
 
 ## Non-Admin macOS Reverse Relay
 
@@ -442,8 +556,7 @@ Then run:
   --client claude \
   --project /absolute/path/to/project/on/vm \
            /absolute/path/to/project/on/mac \
-  --shell /bin/zsh \
-  --mutagen project-sync
+  --shell /bin/zsh
 ```
 
 Replace all paths, aliases, shell, and session values with local values. The
@@ -464,10 +577,15 @@ Setup performs these operations without administrator access:
    Agent client.
 7. Verifies a VM-to-Mac command through the relay.
 
-It does not synchronize separate project checkouts unless `--mutagen` or
-another verified mechanism is configured. It does not grant access only to one
-project: the VM can open a shell as the current Mac user while the relay is
-active, so use it only with a trusted VM.
+It does not synchronize separate project checkouts by itself. After first
+setup, run `setup-mutagen.sh --install` in the VM project, pass an already
+reviewed session with `--mutagen`, or use another verified mechanism. The relay
+does not grant access only to one project: the VM can open a shell as the
+current Mac user while it is active, so use it only with a trusted VM.
+
+When repeating setup, omit `--mutagen` to preserve the existing managed session.
+Use `--clear-mutagen` only when intentionally moving to a shared checkout or a
+different verified freshness mechanism.
 
 For a relay created by an earlier version, install only the missing Agent Skill
 without rebuilding the relay:
@@ -505,8 +623,16 @@ Setup already performs a raw end-to-end relay check. For normal user and Agent
 verification, run the redacted doctor command from the VM project:
 
 ```sh
+~/code/remote-dev-execution/scripts/setup-mutagen.sh \
+  --install \
+  --name project-sync
+
 ~/.local/share/remote-dev-execution/dev-exec doctor
 ```
+
+Run the setup helper only for separate checkouts and only once. Skip it for a
+reviewed shared checkout or when an existing session was supplied to relay
+setup.
 
 Doctor proves that the wrapper reached the environment declared by the trusted
 project configuration. It does not independently decide whether that endpoint
@@ -575,21 +701,24 @@ No Mutagen session is needed because both sides use the same checkout.
 ### Demo B: separate checkouts with Mutagen
 
 ```sh
-# Run once after configuring the session according to your sync policy.
-mutagen sync flush -- project-sync
-
 # Run inside the VM project.
 printf '%s\n' \
   'DEV_EXEC_HOST=dev-machine' \
-  'DEV_EXEC_DIR=/absolute/path/to/project/on/authoritative-machine' \
-  'DEV_EXEC_MUTAGEN_SESSION=project-sync' > .dev-exec.env
+  'DEV_EXEC_DIR=/absolute/path/to/project/on/authoritative-machine' > .dev-exec.env
 chmod 600 .dev-exec.env
+
+# Install, create the session, update config, and run doctor once.
+~/code/remote-dev-execution/scripts/setup-mutagen.sh \
+  --install \
+  --name project-sync \
+  --ignore PROJECT_GENERATED_DIRECTORY
 
 ~/code/remote-dev-execution/scripts/dev-exec doctor
 ~/code/remote-dev-execution/scripts/dev-exec -- npm test
 ```
 
-The wrapper flushes before every run and stops if the flush fails.
+Remove `--ignore PROJECT_GENERATED_DIRECTORY` when no additional ignore is
+needed. The wrapper flushes and checks session health before every run.
 
 ### Demo C: VM Claude to a non-admin Mac
 
@@ -600,10 +729,12 @@ ssh dev-vm true
   --client claude \
   --project /absolute/path/to/project/on/vm \
            /absolute/path/to/project/on/mac \
-  --shell /bin/zsh \
-  --mutagen project-sync
+  --shell /bin/zsh
 
-# In the VM project: verify delegated execution, then run the test.
+# In the VM project: configure synchronization once, then run the test.
+~/code/remote-dev-execution/scripts/setup-mutagen.sh \
+  --install \
+  --name project-sync
 ~/.local/share/remote-dev-execution/dev-exec doctor
 ~/.local/share/remote-dev-execution/dev-exec -- npm test
 ```
@@ -616,7 +747,9 @@ ssh dev-vm true
 | `configuration not found` | Create `.dev-exec.env` in the project or a parent directory. |
 | SSH prompts for a password | Fix the ordinary SSH alias and keychain first; the wrapper is non-interactive. |
 | Remote directory fails | Confirm `DEV_EXEC_DIR` is absolute and exists on the authoritative machine. |
-| Mutagen flush fails | Run `mutagen sync list` and `mutagen sync flush -- SESSION`; do not bypass the preflight. |
+| Mutagen executable is unavailable | Run `setup-mutagen.sh --install`, or correct `DEV_EXEC_MUTAGEN_BIN` where `dev-exec` runs. |
+| Mutagen session is unavailable | Confirm `DEV_EXEC_MUTAGEN_SESSION` with `mutagen sync list -- SESSION`; do not select an unrelated session. |
+| Mutagen health reports a disconnected endpoint, conflicts, or filesystem problems | Inspect `mutagen sync list --long -- SESSION`, restore the session, reconcile affected files, and rerun doctor. Do not bypass the health gate. |
 | Doctor reports `source freshness: not verified` | Confirm a shared checkout or complete the external sync before testing; connectivity alone is insufficient. |
 | Setup finds an unmanaged `.dev-exec.env` | Keep it and rerun without `--project`, or move it to a backup after review and rerun setup. It is never overwritten automatically. |
 | The Agent cannot find this Skill | Run `dev-relay install-skill` with the matching `--client`, then restart the Agent. |
@@ -676,10 +809,16 @@ Run the same checks used by CI:
 
 ```sh
 sh -n scripts/dev-exec scripts/dev-relay scripts/install-skill.sh \
-  tests/test-dev-exec.sh tests/test-dev-relay.sh tests/test-install-skill.sh
+  scripts/install-mutagen.sh scripts/setup-mutagen.sh \
+  tests/test-dev-exec.sh tests/test-dev-relay.sh tests/test-install-skill.sh \
+  tests/test-install-mutagen.sh tests/test-setup-mutagen.sh \
+  tests/test-relay-embedded.sh
 tests/test-dev-exec.sh
 tests/test-dev-relay.sh
 tests/test-install-skill.sh
+tests/test-install-mutagen.sh
+tests/test-setup-mutagen.sh
+tests/test-relay-embedded.sh
 ```
 
 The official Skill metadata validator additionally requires Python `PyYAML`.
@@ -687,6 +826,7 @@ The official Skill metadata validator additionally requires Python `PyYAML`.
 ## References and License
 
 - [Configuration reference](references/configuration.md)
+- [Mutagen synchronization](references/mutagen.md)
 - [Non-admin macOS reverse relay reference](references/reverse-relay.md)
 - [Agent execution validation](references/agent-validation.md)
 - [MIT License](LICENSE)

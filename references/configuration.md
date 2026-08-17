@@ -11,6 +11,7 @@ Use a project-local `.dev-exec.env` to describe the authoritative development en
 - [Command Semantics](#command-semantics)
 - [Doctor and Trust Boundary](#doctor-and-trust-boundary)
 - [Source Freshness and Ownership](#source-freshness-and-ownership)
+- [Recommended Mutagen Setup](#recommended-mutagen-setup)
 - [Mutagen Preflight](#mutagen-preflight)
 - [Troubleshooting](#troubleshooting)
 
@@ -33,13 +34,20 @@ dev-relay setup VM_ALIAS \
 | `AUTHORITATIVE_PROJECT_DIR` | Required with `--project` | Absolute checkout path used for delegated commands in the authoritative environment. It becomes `DEV_EXEC_DIR`. |
 | `--client CLIENT` | Optional for `setup` | `CLIENT` must be `claude`, `codex`, or `both`. Installs or updates the canonical Skill checkout and selected user-level links in the Agent environment. Restart the Agent afterward. Standalone `install-skill` defaults to `claude`. |
 | `--shell SHELL` | Optional; requires `--project` | Shell executable used for delegated commands. Setup uses the current user's shell when available; `dev-exec` otherwise defaults to `/bin/sh`. |
-| `--mutagen SESSION` | Optional; requires `--project` | Existing Mutagen session available where `dev-exec` runs. Setup stores its name as `DEV_EXEC_MUTAGEN_SESSION`; every execution flushes it first. |
+| `--mutagen SESSION` | Optional; requires `--project` | Existing Mutagen session available where `dev-exec` runs. Setup stores its name as `DEV_EXEC_MUTAGEN_SESSION`; every execution flushes and health-checks it first. |
+| `--clear-mutagen` | Optional; requires `--project` | Explicitly remove managed `DEV_EXEC_MUTAGEN_SESSION` and `DEV_EXEC_MUTAGEN_BIN` assignments from an existing generated project config. Cannot be combined with `--mutagen`. |
 | `--repo REPOSITORY` | Optional; requires `--client` during `setup` | Git repository used for the canonical Skill checkout. |
 | `--ref REF` | Optional; requires `--client` during `setup` | Branch, tag, or commit installed from the Skill repository. Defaults to `main`. |
 
 `--client` does not select the authoritative destination; `DEV_EXEC_HOST` and `DEV_EXEC_DIR` do that. Omit `--client` only when the required Skill link is already installed or the Agent does not need this Skill.
 
-`--mutagen` does not create a session or install Mutagen. Select an existing session name with `mutagen sync list` in the Agent environment and verify it once with `mutagen sync flush -- SESSION`. Omit it for a shared checkout or another synchronization mechanism that completes before every validation. Without either, source freshness remains unverified and project tests must stop.
+`--mutagen` does not create a session or install Mutagen. Use it only with an existing session. When no session exists, generate the project config first without `--mutagen`, then run `scripts/setup-mutagen.sh --install --name SESSION` inside the Agent project. See [Mutagen Synchronization](mutagen.md) for installation, ignores, session operation, and recovery. Omit Mutagen for a shared checkout or another synchronization mechanism that completes before every validation. Without any verified freshness mechanism, project tests must stop.
+
+When setup rewrites a previously generated project configuration, it preserves
+the existing Mutagen session and executable assignments by default. Pass
+`--mutagen` to replace the session, or `--clear-mutagen` to remove both
+assignments intentionally. This avoids turning off the freshness gate during a
+routine relay refresh.
 
 ## Lookup and Precedence
 
@@ -75,7 +83,7 @@ An empty `DEV_EXEC_MUTAGEN_SESSION` environment value does not disable a non-emp
 | `DEV_EXEC_HOST` | Yes | One SSH destination or alias. Prefer an alias configured in `~/.ssh/config`. |
 | `DEV_EXEC_DIR` | Yes | Absolute project path in the authoritative development environment. |
 | `DEV_EXEC_SHELL` | No | Remote shell executable used with `-lc`. Defaults to `/bin/sh`. |
-| `DEV_EXEC_MUTAGEN_SESSION` | No | Mutagen sync session to flush before SSH execution. |
+| `DEV_EXEC_MUTAGEN_SESSION` | No | Mutagen sync session to flush and health-check before SSH execution. |
 | `DEV_EXEC_MUTAGEN_BIN` | No | Mutagen executable name or path. Defaults to `mutagen`. |
 
 Copy `assets/.dev-exec.env.example` into the business project's root as `.dev-exec.env`, then replace every placeholder locally. The root `.gitignore` pattern in this repository does not automatically protect other repositories, so add `.dev-exec.env` to each business project's ignore rules.
@@ -111,7 +119,7 @@ Pass one quoted string when shell syntax must be interpreted remotely:
 dev-exec 'npm test | tee /tmp/test.log'
 ```
 
-The remote command starts in `DEV_EXEC_DIR`. Remote stdout and stderr are not captured or rewritten, and the SSH process status is returned to the caller.
+The remote command starts in `DEV_EXEC_DIR`. Remote stdout and stderr are not captured or rewritten, and the SSH process status is returned to the caller. The wrapper requires batch authentication and strict host-key checking; trust the alias with ordinary SSH before invoking it.
 
 ## Doctor and Trust Boundary
 
@@ -126,7 +134,10 @@ The default output is intentionally redacted:
 | Output | Meaning |
 | --- | --- |
 | `configuration: valid` | Required values are present and the project configuration loaded successfully. |
-| `synchronization preflight: passed` | The configured Mutagen session flushed successfully before the probe. |
+| `synchronization tool: available` | The configured Mutagen executable can be resolved. |
+| `synchronization session: available` | The configured session exists and its state can be queried. |
+| `synchronization health: healthy` | The post-flush state has connected endpoints and no conflicts, session error, scan problems, or transition problems. |
+| `synchronization preflight: passed` | The configured session flushed and passed its structured health check. |
 | `source freshness: not verified` | No synchronization preflight is configured. Confirm a shared checkout or completed external sync before testing. |
 | `authoritative execution: ready` | The configured destination accepted a non-interactive command in `DEV_EXEC_DIR` using the selected shell. |
 
@@ -138,11 +149,33 @@ Use `dev-exec doctor --verbose` only for user-approved troubleshooting. Underlyi
 
 `dev-exec` cannot infer whether an unconfigured remote checkout contains the current local edits.
 
-- With `DEV_EXEC_MUTAGEN_SESSION`, the wrapper flushes the named session before SSH.
+- With `DEV_EXEC_MUTAGEN_SESSION`, the wrapper flushes the named session and rejects unhealthy post-flush state before SSH.
 - Without it, confirm that `DEV_EXEC_DIR` is the same shared checkout or that another synchronization mechanism has completed before accepting remote results.
 - Stop when freshness is unknown.
 
 Prefer non-mutating validation commands. Before running installs, formatters, code generators, snapshot updates, migrations, or any command that can modify repository files, decide which checkout owns those changes and how they will return to the AI editing environment. Do not leave authoritative source changes stranded remotely.
+
+## Recommended Mutagen Setup
+
+For separate checkouts, run this from the Agent project after `.dev-exec.env`
+has been generated and the configured SSH alias is reachable:
+
+```sh
+~/code/remote-dev-execution/scripts/setup-mutagen.sh \
+  --install \
+  --name project-sync
+```
+
+The helper derives both endpoints from the existing project configuration,
+creates a `two-way-safe` session, always ignores VCS metadata and
+`.dev-exec.env`, writes the session name atomically, and runs doctor. Add
+project-specific generated directories with repeated `--ignore PATH` options.
+It refuses to rewrite an existing Mutagen assignment.
+
+Run installation/session creation only as an explicit setup action. Daily
+Agent validation should use the already configured `dev-exec` preflight.
+Detailed installation, checksum, ignore, lifecycle, and conflict guidance is
+in [Mutagen Synchronization](mutagen.md).
 
 ## Mutagen Preflight
 
@@ -153,6 +186,13 @@ mutagen sync flush -- SESSION
 ```
 
 It waits for completion before opening SSH. A non-zero flush status is returned immediately, so a command is never run against a knowingly stale authoritative copy.
+
+After a successful flush, the wrapper queries the selected session with a
+structured Mutagen template and accepts only a fixed `ok` token. It stops
+before SSH when either endpoint is disconnected, or when the state reports
+conflicts, a last session error, scan problems, or transition problems. Mutagen
+may complete a `two-way-safe` flush while retaining conflicts, so this second
+check is mandatory.
 
 The flush runs in the same environment as `dev-exec`. If Claude or Codex runs in
 a VM, install Mutagen there and create the session there (or expose the session
@@ -165,4 +205,6 @@ authoritative Mac does not satisfy this preflight.
 - **SSH cannot connect:** Test the exact `DEV_EXEC_HOST` alias with the system SSH client and inspect `~/.ssh/config`.
 - **Remote directory fails:** Confirm `DEV_EXEC_DIR` is absolute and exists on the authoritative machine.
 - **Shell fails:** Set `DEV_EXEC_SHELL` to an executable available on the authoritative machine.
-- **Mutagen fails:** Resolve the session state and rerun. Do not bypass the flush to force validation.
+- **Mutagen executable is unavailable:** Install it where `dev-exec` runs, use `setup-mutagen.sh --install`, or correct `DEV_EXEC_MUTAGEN_BIN`.
+- **Mutagen session is unavailable:** Confirm `DEV_EXEC_MUTAGEN_SESSION` with `mutagen sync list -- SESSION`; do not substitute an unreviewed session.
+- **Mutagen health reports a disconnected endpoint, conflicts, or filesystem problems:** Inspect `mutagen sync list --long -- SESSION` as the user, restore the session, reconcile reported paths, and rerun doctor. Do not bypass the health gate.

@@ -42,6 +42,8 @@ git -C "$source_repo" commit -q -m update
 env HOME="$home" "$installer" --repo "$source_repo" --ref main --client both
 [ -L "$home/.agents/skills/remote-dev-execution" ]
 grep -Fqx '# updated' "$canonical/SKILL.md"
+[ ! -e "$canonical/remote-dev-execution" ]
+[ -z "$(git -C "$canonical" status --porcelain)" ]
 
 git -C "$source_repo" tag v0.1.0
 tag_home=$test_root/tag-home

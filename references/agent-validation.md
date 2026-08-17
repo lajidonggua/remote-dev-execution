@@ -16,7 +16,7 @@ Do not modify files yet.
 1. Inspect the project instructions, manifests, build files, CI configuration, and relevant tests.
 2. Locate the nearest .dev-exec.env without printing its contents or values.
 3. Run `dev-exec doctor` through the configured wrapper.
-4. Continue only if doctor reports `authoritative execution: ready` and source freshness is either verified or independently confirmed.
+4. Continue only if doctor reports `authoritative execution: ready` and source freshness is either verified by `synchronization health: healthy` plus `synchronization preflight: passed`, or independently confirmed for a reviewed shared checkout.
 5. Select the smallest relevant non-mutating project test.
 6. Run that test only through dev-exec, preserving its output and exit status.
 7. Classify any failure as code, environment, dependency, synchronization, or execution-wrapper related.
@@ -35,7 +35,7 @@ Do not include raw configuration or infrastructure details.
 
 - The tool transcript contains `dev-exec doctor` before the project test.
 - The project test is invoked through `dev-exec`, not directly in the editing workspace.
-- The agent stops when doctor reports failed execution or unverified source freshness.
+- The agent stops when doctor reports failed execution, an unavailable or unhealthy synchronization state, or unverified source freshness.
 - The report contains the project command and exit code but no host, user, path, address, operating system, or transport detail.
 - A narrative claim without an observable `dev-exec` invocation is not proof of delegated execution.
 

@@ -26,9 +26,19 @@ chmod 0700 "$fake_bin/ssh"
 
 cat > "$fake_bin/mutagen" <<'EOF'
 #!/bin/sh
-printf 'mutagen-called\n' > "$FAKE_MUTAGEN_MARKER"
+printf '%s\n' "$*" >> "$FAKE_MUTAGEN_MARKER"
+case " $* " in
+  *' --template '*)
+    printf '%s' "${FAKE_MUTAGEN_HEALTH:-ok}"
+    exit "${FAKE_MUTAGEN_HEALTH_STATUS:-0}"
+    ;;
+esac
 printf 'mutagen-private-stdout\n'
 printf 'mutagen-private-stderr\n' >&2
+case ${1-}:${2-} in
+  sync:list) exit "${FAKE_MUTAGEN_LIST_STATUS:-${FAKE_MUTAGEN_STATUS:-0}}" ;;
+  sync:flush) exit "${FAKE_MUTAGEN_FLUSH_STATUS:-${FAKE_MUTAGEN_STATUS:-0}}" ;;
+esac
 exit "${FAKE_MUTAGEN_STATUS:-0}"
 EOF
 chmod 0700 "$fake_bin/mutagen"
@@ -55,10 +65,19 @@ FAKE_MUTAGEN_STATUS=0 \
 grep -Fq 'remote-stdout' "$output"
 grep -Fq 'remote-stderr' "$error"
 grep -Fq 'ssh-called' "$ssh_marker"
+grep -Fq '<-T>' "$output"
+grep -Fq '<-o><BatchMode=yes>' "$output"
+grep -Fq '<-o><ClearAllForwardings=yes>' "$output"
+grep -Fq '<-o><ForwardAgent=no>' "$output"
+grep -Fq '<-o><ForwardX11=no>' "$output"
+grep -Fq '<-o><RequestTTY=no>' "$output"
+grep -Fq '<-o><StrictHostKeyChecking=yes>' "$output"
 grep -Fq '<test-host>' "$output"
 grep -Fq "cd '/authoritative/project'" "$output"
 grep -Fq "'hello world'" "$output"
 [ -f "$mutagen_marker" ]
+grep -Fqx 'sync flush -- test-session' "$mutagen_marker"
+grep -Fq 'sync list --template ' "$mutagen_marker"
 
 rm -f "$ssh_marker"
 if PATH="$fake_bin:$PATH" \
@@ -93,6 +112,9 @@ FAKE_MUTAGEN_STATUS=0 \
   sh -c "cd '$project' && '$wrapper' doctor > '$doctor_output' 2> '$doctor_error'"
 
 grep -Fqx 'dev-exec doctor: configuration: valid' "$doctor_output"
+grep -Fqx 'dev-exec doctor: synchronization tool: available' "$doctor_output"
+grep -Fqx 'dev-exec doctor: synchronization session: available' "$doctor_output"
+grep -Fqx 'dev-exec doctor: synchronization health: healthy' "$doctor_output"
 grep -Fqx 'dev-exec doctor: synchronization preflight: passed' "$doctor_output"
 grep -Fqx 'dev-exec doctor: authoritative execution: ready' "$doctor_output"
 ! grep -Fq 'test-host' "$doctor_output"
@@ -121,7 +143,8 @@ status=0
 if PATH="$fake_bin:$PATH" \
   FAKE_SSH_MARKER="$ssh_marker" \
   FAKE_MUTAGEN_MARKER="$mutagen_marker" \
-  FAKE_MUTAGEN_STATUS=17 \
+  FAKE_MUTAGEN_LIST_STATUS=0 \
+  FAKE_MUTAGEN_FLUSH_STATUS=17 \
     sh -c "cd '$project' && '$wrapper' doctor" > "$doctor_output" 2> "$doctor_error"; then
   status=0
 else
@@ -132,6 +155,97 @@ grep -Fqx 'dev-exec doctor: synchronization preflight: failed' "$doctor_error"
 ! grep -Fq 'mutagen-private' "$doctor_output"
 ! grep -Fq 'mutagen-private' "$doctor_error"
 [ ! -f "$ssh_marker" ]
+
+rm -f "$ssh_marker"
+status=0
+if PATH="$fake_bin:$PATH" \
+  FAKE_SSH_MARKER="$ssh_marker" \
+  FAKE_MUTAGEN_MARKER="$mutagen_marker" \
+  FAKE_MUTAGEN_LIST_STATUS=0 \
+  FAKE_MUTAGEN_FLUSH_STATUS=0 \
+  FAKE_MUTAGEN_HEALTH=conflicts \
+    sh -c "cd '$project' && '$wrapper' -- true" > "$doctor_output" 2> "$doctor_error"; then
+  status=0
+else
+  status=$?
+fi
+[ "$status" -eq 65 ]
+grep -Fqx 'dev-exec: synchronization health check failed: conflicts detected; remote command not started' "$doctor_error"
+! grep -Fq 'test-host' "$doctor_error"
+[ ! -f "$ssh_marker" ]
+
+rm -f "$ssh_marker"
+status=0
+if PATH="$fake_bin:$PATH" \
+  FAKE_SSH_MARKER="$ssh_marker" \
+  FAKE_MUTAGEN_MARKER="$mutagen_marker" \
+  FAKE_MUTAGEN_LIST_STATUS=0 \
+  FAKE_MUTAGEN_FLUSH_STATUS=0 \
+  FAKE_MUTAGEN_HEALTH=disconnected \
+    sh -c "cd '$project' && '$wrapper' -- true" > "$doctor_output" 2> "$doctor_error"; then
+  status=0
+else
+  status=$?
+fi
+[ "$status" -eq 65 ]
+grep -Fqx 'dev-exec: synchronization health check failed: endpoint disconnected; remote command not started' "$doctor_error"
+! grep -Fq 'test-host' "$doctor_error"
+[ ! -f "$ssh_marker" ]
+
+rm -f "$ssh_marker"
+status=0
+if PATH="$fake_bin:$PATH" \
+  FAKE_SSH_MARKER="$ssh_marker" \
+  FAKE_MUTAGEN_MARKER="$mutagen_marker" \
+  FAKE_MUTAGEN_LIST_STATUS=18 \
+    sh -c "cd '$project' && '$wrapper' doctor" > "$doctor_output" 2> "$doctor_error"; then
+  status=0
+else
+  status=$?
+fi
+[ "$status" -eq 18 ]
+grep -Fqx 'dev-exec doctor: synchronization session: unavailable' "$doctor_error"
+! grep -Fq 'mutagen-private' "$doctor_output"
+! grep -Fq 'mutagen-private' "$doctor_error"
+[ ! -f "$ssh_marker" ]
+
+missing_tool_project=$test_root/missing-tool-project
+mkdir -p "$missing_tool_project"
+cat > "$missing_tool_project/.dev-exec.env" <<EOF
+DEV_EXEC_HOST=test-host
+DEV_EXEC_DIR=/authoritative/project
+DEV_EXEC_MUTAGEN_SESSION=test-session
+DEV_EXEC_MUTAGEN_BIN=$test_root/missing-mutagen
+EOF
+
+rm -f "$ssh_marker"
+status=0
+if PATH="$fake_bin:$PATH" \
+  FAKE_SSH_MARKER="$ssh_marker" \
+    sh -c "cd '$missing_tool_project' && '$wrapper' doctor" > "$doctor_output" 2> "$doctor_error"; then
+  status=0
+else
+  status=$?
+fi
+[ "$status" -eq 69 ]
+grep -Fqx 'dev-exec doctor: synchronization tool: unavailable' "$doctor_error"
+! grep -Fq "$test_root" "$doctor_output"
+! grep -Fq "$test_root" "$doctor_error"
+[ ! -f "$ssh_marker" ]
+
+missing_tool_marker=$test_root/missing-tool-called
+missing_tool_error=$test_root/missing-tool-error
+status=0
+if PATH="$fake_bin:$PATH" \
+  FAKE_SSH_MARKER="$missing_tool_marker" \
+    sh -c "cd '$missing_tool_project' && '$wrapper' -- true" > "$doctor_output" 2> "$missing_tool_error"; then
+  status=0
+else
+  status=$?
+fi
+[ "$status" -eq 69 ]
+grep -Fqx 'dev-exec: synchronization tool unavailable; remote command not started' "$missing_tool_error"
+[ ! -f "$missing_tool_marker" ]
 
 no_sync_project=$test_root/no-sync-project
 mkdir -p "$no_sync_project"
@@ -181,6 +295,25 @@ fi
 [ "$status" -eq 64 ]
 grep -Fqx 'dev-exec doctor: configuration: invalid' "$doctor_error"
 ! grep -Fq "$invalid_project" "$doctor_error"
+! grep -Fq 'private-host' "$doctor_error"
+
+newline_project=$test_root/newline-project
+mkdir -p "$newline_project"
+cat > "$newline_project/.dev-exec.env" <<'EOF'
+DEV_EXEC_HOST='private-host
+with-newline'
+DEV_EXEC_DIR=/authoritative/project
+EOF
+
+status=0
+if PATH="$fake_bin:$PATH" \
+    sh -c "cd '$newline_project' && '$wrapper' doctor" > "$doctor_output" 2> "$doctor_error"; then
+  status=0
+else
+  status=$?
+fi
+[ "$status" -eq 64 ]
+grep -Fqx 'dev-exec: DEV_EXEC_HOST must not contain a newline' "$doctor_error"
 ! grep -Fq 'private-host' "$doctor_error"
 
 printf '%s\n' 'test-dev-exec: all checks passed'

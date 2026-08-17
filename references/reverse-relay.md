@@ -92,18 +92,18 @@ To generate a project configuration in the same operation, provide both checkout
   --client claude \
   --project /absolute/path/to/project/on/the/vm \
            /absolute/path/to/project/on/the/mac \
-  --shell /bin/zsh \
-  --mutagen workspace
+  --shell /bin/zsh
 ```
 
 See [Relay Setup Options](configuration.md#relay-setup-options) for every value,
-accepted `--client` choice, and the rules for omitting `--mutagen`.
+accepted `--client` choice, and how to use `--mutagen` when a reviewed session
+already exists.
 
-The `--project` mapping writes a marked `.dev-exec.env` in the VM project, adds it to Git's local exclude when possible, and can be repeated safely. It refuses to replace a symlink or an unmarked existing file. `--shell` and `--mutagen` are optional. Both paths remain explicit because setup cannot safely infer which Mac checkout is authoritative.
+The `--project` mapping writes a marked `.dev-exec.env` in the VM project, adds it to Git's local exclude when possible, and can be repeated safely. It refuses to replace a symlink or an unmarked existing file. `--shell` and `--mutagen` are optional. Existing managed Mutagen assignments are preserved on repeat unless `--mutagen` replaces the session or `--clear-mutagen` explicitly removes them. Both paths remain explicit because setup cannot safely infer which Mac checkout is authoritative.
 
 If setup reports an unmanaged project configuration, it has stopped before changing relay state. Keep the existing file and rerun without `--project` when it is already correct, or review and move it to a backup before asking setup to generate a managed file.
 
-The command is safe to rerun. It replaces only its named managed SSH snippet and dedicated host-key entry. It refuses conflicting relay keys, alias collisions, symlinked managed snippets or dedicated trust files, and incompatible configuration rather than silently replacing them. When `~/.local/bin/dev-exec` already belongs to something else, setup leaves it untouched and reports the managed wrapper's full path.
+The command is safe to rerun. It replaces only its named managed SSH snippet and dedicated host-key entry, and attempts to restore an already-running relay if a later setup step fails. It refuses conflicting relay keys, alias collisions, symlinked managed snippets or dedicated trust files, and incompatible configuration rather than silently replacing them. When `~/.local/bin/dev-exec` already belongs to something else, setup leaves it untouched and reports the managed wrapper's full path.
 
 If you did not provide `--project`, create an ignored `.dev-exec.env` in each VM project containing the real Mac project path:
 
@@ -116,6 +116,11 @@ DEV_EXEC_SHELL=/bin/zsh
 Then execute from the VM project:
 
 ```sh
+# Separate checkouts only: install and configure synchronization once.
+~/code/remote-dev-execution/scripts/setup-mutagen.sh \
+  --install \
+  --name project-sync
+
 ~/.local/share/remote-dev-execution/dev-exec doctor
 ```
 
@@ -127,7 +132,7 @@ Run a project test only after doctor reports delegated execution ready and sourc
 
 Use `--client codex` or `--client both` as appropriate. Add `--repo` and `--ref` when installing from an internal repository or pinning a reviewed release.
 
-Relay setup establishes execution connectivity; it does not synchronize project files. If the VM and Mac use separate checkouts, configure and verify Mutagen or another synchronization mechanism before trusting remote results. Add the existing session to `.dev-exec.env` as `DEV_EXEC_MUTAGEN_SESSION`; `dev-exec` will flush it and stop before SSH when the flush fails.
+Relay setup establishes execution connectivity; it does not synchronize project files. If the VM and Mac use separate checkouts, run the bundled project-aware Mutagen helper or configure another mechanism with a blocking completion check before trusting remote results. For an existing session, add it as `DEV_EXEC_MUTAGEN_SESSION` or pass `--mutagen SESSION` during relay setup. `dev-exec` flushes the session, rejects disconnected endpoints, conflicts, and filesystem problems from structured state, and stops before SSH whenever freshness cannot be established. See [Mutagen Synchronization](mutagen.md).
 
 Use the following manual procedure only when customizing keys, ports, paths, or trust installation, or when diagnosing a failed automated setup.
 

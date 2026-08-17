@@ -7,7 +7,7 @@ VM / 容器 / 其他 AI 编辑环境
         |
         | 在本地检查和修改源码
         v
-dev-exec / SSH / 可选 Mutagen 同步
+dev-exec / SSH / 独立 checkout 推荐使用 Mutagen
         |
         v
 Mac / 工作站 / 真实开发机（权威环境）
@@ -22,7 +22,7 @@ Skill 的核心原则是：轻量的源码检查和编辑留在 AI 所在环境�
 
 英文文档：[README.md](README.md)
 
-## 最短路径：一条命令完成 Relay 部署
+## 最短路径：Relay 一键部署，独立 checkout 再配置同步
 
 对于“非管理员 Mac + Claude Code 运行在 VM”的场景，`dev-relay setup`
 可以一次完成 relay、VM 命令 wrapper、Claude Skill 安装和项目本地配置。
@@ -30,9 +30,8 @@ Skill 的核心原则是：轻量的源码检查和编辑留在 AI 所在环境�
 执行前只需要确认两个前置条件：
 
 1. Mac 已经可以免交互执行 `ssh VM_ALIAS true`。
-2. 当前编辑能通过共享 checkout 或可靠同步机制到达权威 checkout。如果是
-   两个独立 checkout 并使用 Mutagen，请先在 VM 中创建 session，并成功
-   flush 一次。
+2. 已经明确两个项目 checkout 的路径。两个 checkout 分离时，必须先完成
+   下文的 Mutagen 步骤，再运行任何项目测试。
 
 然后在 Mac 的 canonical checkout 中执行：
 
@@ -41,8 +40,7 @@ Skill 的核心原则是：轻量的源码检查和编辑留在 AI 所在环境�
   --client claude \
   --project /absolute/path/to/project/in/agent-environment \
             /absolute/path/to/project/in/authoritative-environment \
-  --shell /bin/zsh \
-  --mutagen MUTAGEN_SESSION
+  --shell /bin/zsh
 ```
 
 ### 参数和值的含义
@@ -55,28 +53,43 @@ Skill 的核心原则是：轻量的源码检查和编辑留在 AI 所在环境�
 | `--client CLIENT` | 可选，首次 setup 推荐填写 | 只能填写 `claude`、`codex` 或 `both`，用于在 Agent 环境安装对应 Skill。安装后重启 Agent。 |
 | `--shell SHELL` | 可选 | 权威环境中实际存在的 shell，通常是 `/bin/zsh` 或 `/bin/sh`。省略时优先使用当前用户 shell，否则 `dev-exec` 默认使用 `/bin/sh`。 |
 | `--mutagen SESSION` | 可选 | `dev-exec` 所在环境中已经存在的 Mutagen session 名称。它不是路径或主机名，并且只能和 `--project` 一起使用。 |
+| `--clear-mutagen` | 可选 | 显式移除已有生成配置中的 Mutagen session 和可执行文件设置。必须和 `--project` 一起使用，不能与 `--mutagen` 同时使用。 |
 
 `--client` 只决定安装哪个 Agent Skill，不决定命令去哪里执行。Claude Code
 运行在 Agent 环境时填写 `claude`，Codex 填写 `codex`，两个客户端都运行时
 填写 `both`。如果正确的 Skill 软链接已经安装，或者本次只配置 relay 和
 wrapper，可以省略；之后也可以使用 `dev-relay install-skill` 单独补装。
 
-`--mutagen` 不会安装 Mutagen，也不会创建 session。两个 checkout 分离并
-使用 Mutagen 时，在 Agent 环境执行下面的命令，填写 `list` 中显示的 session
-名称：
+`--mutagen` 只选择已经存在的 session，不会安装 Mutagen 或创建 session。
+首次还没有 session 时，relay setup 先省略该参数，然后进入生成好配置的
+Agent 项目执行：
 
 ```sh
-mutagen sync list
-mutagen sync flush -- MUTAGEN_SESSION
+~/code/remote-dev-execution/scripts/setup-mutagen.sh \
+  --install \
+  --name project-sync
 ```
 
-之后每次 `dev-exec` 都会先 flush 该 session；flush 失败时不会运行项目命令。
-只有双方使用同一个共享 checkout，或者其他同步检查会在每次验证前完成时，
-才能省略 `--mutagen`。两个独立 checkout 没有可靠同步时，不得运行测试。
+它会按需安装用户级 Mutagen、基于已有项目映射创建 `two-way-safe` session、
+更新被忽略的 `.dev-exec.env`，并立即运行 doctor。以后每次 `dev-exec` 都会
+先 flush，再检查结构化健康状态；端点断开、冲突、文件系统问题或 flush 失败
+都会在 SSH 之前阻止项目命令。
+
+如果已经有审核过的 session，在 relay setup 中填写
+`--mutagen EXISTING_SESSION`。只有真正共享 checkout，或者其他同步工具具有
+可阻塞的完成检查时，才完全省略 Mutagen。两个独立 checkout 没有可靠同步时
+不得运行测试。
+
+重复 setup 时，如果项目配置是已有的生成配置，当前 Mutagen session 和可执行
+文件设置会默认保留；只有传入 `--mutagen` 才会替换 session，传入
+`--clear-mutagen` 才会显式移除。这样普通的 relay 刷新不会意外关闭源码新鲜度
+检查。只有确认项目改为共享 checkout 或其他独立可验证的同步方式时，才使用
+`--clear-mutagen`。
 
 | 场景 | `--client` | `--mutagen` |
 | --- | --- | --- |
-| Claude 首次 setup，两个 checkout 通过 Mutagen 同步 | `claude` | 已存在的 session 名称 |
+| Claude 首次 setup，两个 checkout 分离且还没有 session | `claude` | 先省略，然后在 Agent 项目运行 `setup-mutagen.sh --install` |
+| 首次 setup，但已有审核过的 Mutagen session | `claude` | 已存在的 session 名称 |
 | Claude 首次 setup，双方使用同一个共享 checkout | `claude` | 省略 |
 | Skill 已安装，只更新当前项目映射 | 省略 | 仅当该项目使用 Mutagen 时填写 |
 | Agent 环境同时运行 Claude 和 Codex | `both` | 根据 checkout 同步方式决定 |
@@ -118,13 +131,18 @@ Use $remote-dev-execution to validate delegated execution and run the smallest r
 ## 仓库内容
 
 - `SKILL.md`：Codex 或 Claude 激活 Skill 后读取的核心规则。
-- `scripts/dev-exec`：提供脱敏 doctor、查找项目配置、可选刷新 Mutagen、
-  通过 SSH 执行命令，并保留 stdout、stderr 和退出码。
+- `scripts/dev-exec`：提供脱敏 doctor、查找项目配置、Mutagen flush 和健康
+  检查、通过 SSH 执行命令，并保留 stdout、stderr 和退出码。
 - `scripts/dev-relay`：macOS 非管理员用户态 `sshd` 和由 Mac 发起的反向
   SSH 隧道。
 - `scripts/install-skill.sh`：安全维护 canonical Git checkout，并为 Claude
   Code 或 Codex 建立用户级软链接。
+- `scripts/install-mutagen.sh`：校验 checksum、无需管理员权限的 macOS/Linux
+  Mutagen 安装器。
+- `scripts/setup-mutagen.sh`：根据项目配置创建 session、更新配置并集成运行
+  doctor。
 - `references/configuration.md`：`.dev-exec.env`、变量优先级和源码新鲜度。
+- `references/mutagen.md`：Mutagen 安装、session、ignore、健康检查、运行和恢复。
 - `references/reverse-relay.md`：反向 relay 的安全模型、手动配置和排错。
 - `references/agent-validation.md`：隐私安全的 Agent 提示词和委派执行验收标准。
 - `assets/*.example`：只包含占位符的配置模板。
@@ -137,13 +155,13 @@ Use $remote-dev-execution to validate delegated execution and run the smallest r
 | 场景 | 推荐方式 | 是否必须 Mutagen |
 | --- | --- | --- |
 | VM 可以直接 SSH 到权威开发机，双方使用同一个共享 checkout | 直接 SSH + `.dev-exec.env` | 不需要 |
-| VM 和权威开发机是两个 checkout | 直接 SSH + 已验证的同步机制 | 通常需要；也可以使用其他可靠同步工具 |
+| VM 和权威开发机是两个 checkout | 直接 SSH + Mutagen | 推荐；其他工具必须提供可信、可阻塞的完成检查 |
 | 权威环境是 Mac，VM 无法主动连入 Mac | `dev-relay setup` 反向 relay | 只有两个 checkout 分离时需要 |
 | 需要交互式 shell 或终端调试器 | 直接 `ssh -t` 或 relay SSH | 不需要，但仍必须确认源码是最新的 |
 
-Mutagen 是同步工具，不是 SSH 替代品。本 Skill 只把 Mutagen 用作执行前
-置检查：`dev-exec` 调用 `mutagen sync flush`，刷新失败就不会启动 SSH。
-它不会替你决定同步冲突哪一侧优先，也不会把远程生成文件偷偷改回本地。
+Mutagen 是同步工具，不是 SSH 替代品。两个 checkout 分离时，本 Skill 会把
+它作为强制前置检查：`dev-exec` 先 flush，再读取结构化 session 状态；发现
+冲突或文件系统问题时不会启动 SSH。wrapper 不会替你决定冲突哪一侧优先。
 
 ## 前置条件
 
@@ -159,7 +177,8 @@ Mutagen 是同步工具，不是 SSH 替代品。本 Skill 只把 Mutagen 用作
 
 - 真实项目 checkout、工具链、依赖、服务、Docker、SDK 和运行时。
 - 可以通过 SSH alias 访问的 SSH server；使用反向 relay 时例外。
-- 只有在两个 checkout 需要同步时才需要 Mutagen。
+- 两个 checkout 分离并采用推荐同步方式时，Mutagen 必须安装在
+  `dev-exec` 所在环境；内置安装器不需要管理员权限。
 
 ### 反向 relay 额外条件
 
@@ -227,6 +246,44 @@ canonical checkout。
 不要把私有 deploy key、访问 Token 或私有项目路径写入 Skill；让 Git/SSH
 自己的 credential helper 处理认证。测试阶段可以使用分支，稳定分发应使用
 commit SHA 或 release tag。
+
+### Claude Code 的触发与提示词
+
+Claude Code 会根据 Skill 的描述和当前任务语义，判断是否需要加载 Skill。
+这是按需的语义触发，不是命令拦截器。安装 Skill 不会自动安装 Mutagen、创建
+`.dev-exec.env`、运行 `doctor`，也不能阻止 Claude 直接在当前工作区执行命令。
+
+如果不写明确的工作流提示词，任务中明确提到远程验证时，Claude 仍可能自动
+触发 Skill，但没有绝对保证。比如“修好后运行测试”这种模糊请求，可能被直接
+当作当前工作区的本地测试。即使本地测试成功，也不能证明使用了权威开发环境。
+
+为了让团队行为稳定，建议在 Agent 工作区的项目根目录加入并提交一份
+`CLAUDE.md`（或 `AGENTS.md`）：
+
+```markdown
+For this workspace:
+
+- Treat the current workspace as the editing environment.
+- Run tests, builds, linters, services, and runtime checks only through the project's dev-exec wrapper.
+- Run `dev-exec doctor` before authoritative validation.
+- If execution or source freshness cannot be verified, stop and report the issue.
+- Never run environment-dependent commands directly in the current workspace.
+```
+
+`.dev-exec.env` 和其他机器特定值仍应只保留在本地并加入忽略规则；上面的
+项目规则没有主机名、用户名、路径、操作系统或传输方式信息。安装或更新 Skill，
+或者修改项目规则后，请重启 Claude Code 或新建会话，让它重新加载元数据和指令。
+
+日常任务使用下面这一句即可：
+
+```text
+Use the project's remote-dev-execution workflow for validation.
+```
+
+需要验证 Agent 是否正确委派测试时，使用
+[references/agent-validation.md](references/agent-validation.md) 中的完整英文
+提示词。它要求先运行脱敏的 `dev-exec doctor`，再选择最小相关测试，并且只报告
+项目结果。不要为了触发 Skill 而在提示词中写入基础设施详情。
 
 ## 配置项目
 
@@ -334,24 +391,59 @@ stderr 原样返回，SSH 成功连接后返回远程命令的退出码。
 
 ### 需要 Mutagen 的情况
 
-当 VM 和 Mac/工作站是两个 checkout，且 VM 是主要编辑侧时，Mutagen 很有用。
-按照团队的同步策略创建 session。下面是通用形式，路径和 alias 需要替换：
+当 Agent 和权威环境各自拥有一个 checkout 时，推荐 Mutagen。Claude/Codex
+仍在 Agent 本地文件系统中高频扫描和修改，不需要通过高延迟网络挂载读写。
+
+先手动创建 `.dev-exec.env`，或者用 `dev-relay setup --project` 生成。然后在
+Agent 项目中执行一次：
 
 ```sh
-mutagen sync create \
-  --name=project-sync \
-  /absolute/path/to/project/on/vm \
-  ssh://dev-machine/absolute/path/to/project/on/authoritative-machine
+~/code/remote-dev-execution/scripts/setup-mutagen.sh \
+  --install \
+  --name project-sync
 ```
 
-先确认 session 健康并手动 flush 一次：
+| 参数 | 什么时候使用 | 作用 |
+| --- | --- | --- |
+| `--install` | `dev-exec` 所在环境还没有 Mutagen | 不用 `sudo`，把固定版本安装到 `~/.local/bin`。 |
+| `--name SESSION` | 推荐，用于团队统一命名 | 指定新 session 名；省略时按当前项目生成稳定名称。 |
+| `--ignore PATH` | 可重建的依赖、缓存或构建目录只应留在本侧 | 添加一个 ignore；多个目录重复填写该参数。 |
+| `--version VERSION` | 团队审核了其他安装版本 | 指定 `--install` 使用的版本。 |
+| `--verbose` | 仅限用户批准的 setup 排错 | 显示 Mutagen 原始输出，可能包含端点和路径。 |
+
+helper 会在需要时把固定版本安装到 `~/.local/bin`，不使用 `sudo`；下载安装包
+后会核对官方 release 的 `SHA256SUMS`。它从最近的 `.dev-exec.env` 推导两个
+端点，创建 `two-way-safe` session，原子写入 session 配置，维护本地 Git
+exclude，并执行 doctor。如果 `.dev-exec.env` 已被 Git 跟踪，它会直接停止。
+
+只安装 Mutagen、不创建 session 时，在 `dev-exec` 所在环境运行：
 
 ```sh
-mutagen sync list
-mutagen sync flush -- project-sync
+~/code/remote-dev-execution/scripts/install-mutagen.sh
+~/.local/bin/mutagen version
 ```
 
-然后在 VM 项目的 `.dev-exec.env` 中只保存 session 名称：
+该环境已经批准 Homebrew 时，也可以执行
+`brew install mutagen-io/mutagen/mutagen`。不要只在权威环境安装；前置检查在
+`dev-exec` 所在环境执行。
+Mutagen daemon 会按需自动启动，通常不需要单独启动服务。重启或网络变化后
+重新运行 doctor 即可。
+
+VCS 元数据和 `.dev-exec.env` 默认不会同步。只为当前项目明确增加可重建的
+依赖或构建目录：
+
+```sh
+~/code/remote-dev-execution/scripts/setup-mutagen.sh \
+  --install \
+  --name project-sync \
+  --ignore node_modules \
+  --ignore build
+```
+
+不要照搬 ignore；源码、lockfile、migration、fixture 和需要审核的生成文件不能
+忽略。被忽略的依赖和产物需要在权威环境独立准备。
+
+已有 session 时，直接配置它的准确名称：
 
 ```sh
 DEV_EXEC_HOST=dev-machine
@@ -361,16 +453,24 @@ DEV_EXEC_MUTAGEN_SESSION=project-sync
 DEV_EXEC_MUTAGEN_BIN=mutagen
 ```
 
-之后每次 `dev-exec` 都会先执行 `mutagen sync flush -- project-sync`。flush
-失败时不会启动 SSH；应修复同步状态，不要绕过前置检查。
+以后每次 `dev-exec` 都会先 flush，再查询结构化健康状态，然后才启动 SSH。
+session 不存在、端点断开、冲突、session error、扫描问题、写入问题或 flush
+失败都会停止执行。这个二次检查很重要，因为 `two-way-safe` 可以在保留冲突的
+情况下完成一次 flush。
 
-flush 在运行 `dev-exec` 的环境中执行。Claude 如果运行在 VM，Mutagen 和
-session 都必须在 VM 侧可用，并且 VM 能使用该 session 所需的 SSH alias。只在
-Mac 安装 Mutagen，不能满足 VM 侧的执行前置检查。
+健康的 doctor 会依次包含 `synchronization tool: available`、
+`synchronization session: available`、`synchronization health: healthy`、
+`synchronization preflight: passed` 和 `authoritative execution: ready`。
+
+Mutagen 和 session 必须存在于 `dev-exec` 所在环境。只安装在权威环境不能
+完成 Agent 侧前置检查。
 
 运行 formatter、generator、migration、install 或更新 snapshot 前，先确定
 生成文件由哪一侧拥有，以及如何安全回传到编辑环境。Mutagen 不会替你解决
 这些所有权问题。
+
+单独安装、版本固定、已有 session、ignore、日常操作、冲突恢复和安全细节见
+[Mutagen synchronization](references/mutagen.md)。
 
 ## macOS 非管理员反向 Relay
 
@@ -406,8 +506,7 @@ ssh dev-vm true
   --client claude \
   --project /absolute/path/to/project/on/vm \
            /absolute/path/to/project/on/mac \
-  --shell /bin/zsh \
-  --mutagen project-sync
+  --shell /bin/zsh
 ```
 
 所有 alias、路径、shell 和 Mutagen session 都是示例，必须替换。`--project`
@@ -426,9 +525,14 @@ setup 会在不使用管理员权限的情况下：
 6. 为指定 Agent 安装 canonical Git checkout 和用户级 Skill 软链接。
 7. 执行一次 VM 到 Mac 的端到端验证。
 
-setup 只负责连通性，不会自动同步两个独立 checkout，除非设置了 `--mutagen`
-或其他可靠同步机制。relay 活跃时，VM 可以以当前 Mac 用户打开 shell，
-并不局限于某个项目目录，所以只应连接可信 VM。
+setup 本身只负责连通性，不会自动同步两个独立 checkout。首次完成后，在 VM
+项目中运行 `setup-mutagen.sh --install`；如果已经有审核过的 session，也可以
+在 setup 时使用 `--mutagen`；或者采用其他经过验证的同步机制。relay 活跃时，
+VM 可以以当前 Mac 用户打开 shell，并不局限于某个项目目录，所以只应连接
+可信 VM。
+
+重复 setup 时省略 `--mutagen` 会保留已有的生成配置和 Mutagen session。只有在
+明确改用共享 checkout 或其他已验证的新鲜度机制时，才使用 `--clear-mutagen`。
 
 如果 relay 由旧版本创建，可以只补装 Agent Skill，不需要重建 relay：
 
@@ -464,8 +568,15 @@ setup 已经做过底层端到端检查。日常由用户或 Agent 验证时，�
 运行脱敏的 doctor：
 
 ```sh
+~/code/remote-dev-execution/scripts/setup-mutagen.sh \
+  --install \
+  --name project-sync
+
 ~/.local/share/remote-dev-execution/dev-exec doctor
 ```
+
+只有两个 checkout 分离时才运行一次 setup helper。已经确认共享 checkout，
+或 relay setup 已填写现有 session 时跳过。
 
 doctor 能证明 wrapper 到达了可信项目配置所声明的环境，但不会独立判断该
 目标是否真的具备“权威”身份，也无法判断未配置同步的独立 checkout 是否
@@ -529,21 +640,24 @@ ssh dev-machine true
 ### Demo B：两个 checkout，使用 Mutagen
 
 ```sh
-# 按团队同步策略配置 session 后，可先手动验证。
-mutagen sync flush -- project-sync
-
 # 在 VM 项目中执行。
 printf '%s\n' \
   'DEV_EXEC_HOST=dev-machine' \
-  'DEV_EXEC_DIR=/absolute/path/to/project/on/authoritative-machine' \
-  'DEV_EXEC_MUTAGEN_SESSION=project-sync' > .dev-exec.env
+  'DEV_EXEC_DIR=/absolute/path/to/project/on/authoritative-machine' > .dev-exec.env
 chmod 600 .dev-exec.env
+
+# 一次完成安装、创建 session、更新配置和 doctor。
+~/code/remote-dev-execution/scripts/setup-mutagen.sh \
+  --install \
+  --name project-sync \
+  --ignore PROJECT_GENERATED_DIRECTORY
 
 ~/code/remote-dev-execution/scripts/dev-exec doctor
 ~/code/remote-dev-execution/scripts/dev-exec -- npm test
 ```
 
-wrapper 每次执行前都会 flush，flush 失败则不会运行测试。
+没有额外 ignore 时删除 `--ignore PROJECT_GENERATED_DIRECTORY`。wrapper 每次
+执行前都会 flush 并检查 session 健康状态。
 
 ### Demo C：VM Claude 调试非管理员 Mac
 
@@ -554,10 +668,12 @@ ssh dev-vm true
   --client claude \
   --project /absolute/path/to/project/on/vm \
            /absolute/path/to/project/on/mac \
-  --shell /bin/zsh \
-  --mutagen project-sync
+  --shell /bin/zsh
 
-# VM 项目中：验证委派执行，然后运行测试。
+# VM 项目中：一次配置同步，然后验证并运行测试。
+~/code/remote-dev-execution/scripts/setup-mutagen.sh \
+  --install \
+  --name project-sync
 ~/.local/share/remote-dev-execution/dev-exec doctor
 ~/.local/share/remote-dev-execution/dev-exec -- npm test
 ```
@@ -570,7 +686,9 @@ ssh dev-vm true
 | `configuration not found` | 确认当前目录在目标项目树内。 |
 | SSH 要求输入密码 | 先修复普通 SSH alias 和 keychain；wrapper 本身是非交互的。 |
 | 远程目录不存在 | 确认 `DEV_EXEC_DIR` 是权威机器上的绝对路径。 |
-| Mutagen flush 失败 | 执行 `mutagen sync list` 和 `mutagen sync flush -- SESSION`，不要绕过检查。 |
+| Mutagen executable unavailable | 在 `dev-exec` 所在环境运行 `setup-mutagen.sh --install`，或修正 `DEV_EXEC_MUTAGEN_BIN`。 |
+| Mutagen session unavailable | 用 `mutagen sync list -- SESSION` 核对 `DEV_EXEC_MUTAGEN_SESSION`，不要换成未审核的 session。 |
+| Mutagen health 报告端点断开、冲突或文件系统问题 | 用户运行 `mutagen sync list --long -- SESSION`，恢复 session、处理相关文件后重跑 doctor，不要绕过健康检查。 |
 | doctor 显示 `source freshness: not verified` | 先确认共享 checkout 或完成外部同步；仅连通不能证明测试使用了当前源码。 |
 | setup 发现未托管的 `.dev-exec.env` | 保留文件并去掉 `--project` 重跑；或者审核后把它移为备份，再让 setup 生成。脚本不会自动覆盖。 |
 | Agent 找不到 Skill | 用匹配的 `--client` 运行 `dev-relay install-skill`，然后重启 Agent。 |
@@ -625,10 +743,16 @@ git grep -n -I -E \
 
 ```sh
 sh -n scripts/dev-exec scripts/dev-relay scripts/install-skill.sh \
-  tests/test-dev-exec.sh tests/test-dev-relay.sh tests/test-install-skill.sh
+  scripts/install-mutagen.sh scripts/setup-mutagen.sh \
+  tests/test-dev-exec.sh tests/test-dev-relay.sh tests/test-install-skill.sh \
+  tests/test-install-mutagen.sh tests/test-setup-mutagen.sh \
+  tests/test-relay-embedded.sh
 tests/test-dev-exec.sh
 tests/test-dev-relay.sh
 tests/test-install-skill.sh
+tests/test-install-mutagen.sh
+tests/test-setup-mutagen.sh
+tests/test-relay-embedded.sh
 ```
 
 官方 Skill 元数据校验还需要 Python `PyYAML`。
@@ -636,6 +760,7 @@ tests/test-install-skill.sh
 ## 参考和许可证
 
 - [配置参考](references/configuration.md)
+- [Mutagen 同步参考](references/mutagen.md)
 - [macOS 非管理员反向 relay 参考](references/reverse-relay.md)
 - [Agent 执行验证](references/agent-validation.md)
 - [MIT License](LICENSE)

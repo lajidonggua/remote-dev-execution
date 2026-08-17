@@ -25,7 +25,7 @@ jobs:
         run: python -m pip install --disable-pip-version-check pyyaml
 
       - name: Validate shell syntax
-        run: sh -n scripts/dev-exec scripts/dev-relay scripts/install-skill.sh tests/test-dev-exec.sh tests/test-dev-relay.sh tests/test-install-skill.sh
+        run: sh -n scripts/dev-exec scripts/dev-relay scripts/install-skill.sh scripts/install-mutagen.sh scripts/setup-mutagen.sh tests/test-dev-exec.sh tests/test-dev-relay.sh tests/test-install-skill.sh tests/test-install-mutagen.sh tests/test-setup-mutagen.sh tests/test-relay-embedded.sh
 
       - name: Validate Skill metadata
         run: |
@@ -123,4 +123,4 @@ jobs:
           PY
 
       - name: Run wrapper and installer tests
-        run: tests/test-dev-exec.sh && tests/test-dev-relay.sh && tests/test-install-skill.sh
+        run: tests/test-dev-exec.sh && tests/test-dev-relay.sh && tests/test-install-skill.sh && tests/test-install-mutagen.sh && tests/test-setup-mutagen.sh && tests/test-relay-embedded.sh
