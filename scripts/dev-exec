@@ -10,7 +10,8 @@ Usage:
   dev-exec 'shell command with pipes or redirections'
 
 Finds .dev-exec.env from the current directory upward, optionally flushes and
-health-checks the configured Mutagen session, and runs the command over SSH.
+health-checks the configured Mutagen session (locally or on
+DEV_EXEC_MUTAGEN_HOST), and runs the command over SSH.
 
 The doctor command verifies configuration, synchronization preflight, and
 delegated execution without disclosing infrastructure details. --verbose
