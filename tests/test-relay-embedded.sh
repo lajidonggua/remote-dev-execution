@@ -85,9 +85,11 @@ printf '%s\n' \
   "DEV_EXEC_HOST='remote-host'" \
   "DEV_EXEC_DIR='/remote/path'" \
   "DEV_EXEC_MUTAGEN_SESSION='new-session'" \
-  "DEV_EXEC_MUTAGEN_HOST='new-control'" |
+  "DEV_EXEC_MUTAGEN_HOST='new-control'" \
+  "DEV_EXEC_MUTAGEN_BIN='/opt/mutagen'" |
   sh "$project_script" >/dev/null
 grep -Fqx "DEV_EXEC_MUTAGEN_SESSION='new-session'" "$project/.dev-exec.env"
 grep -Fqx "DEV_EXEC_MUTAGEN_HOST='new-control'" "$project/.dev-exec.env"
+grep -Fqx "DEV_EXEC_MUTAGEN_BIN='/opt/mutagen'" "$project/.dev-exec.env"
 
 printf '%s\n' 'test-relay-embedded: all checks passed'

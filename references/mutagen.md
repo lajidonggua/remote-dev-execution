@@ -152,7 +152,8 @@ one. Add its exact name during relay project setup:
 dev-relay setup VM_ALIAS \
   --project AGENT_PROJECT_DIR AUTHORITATIVE_PROJECT_DIR \
   --mutagen EXISTING_SESSION \
-  --mutagen-host MUTAGEN_CONTROL_HOST
+  --mutagen-host MUTAGEN_CONTROL_HOST \
+  --mutagen-bin MUTAGEN_BIN
 ```
 
 Or add these assignments to the ignored project configuration:
@@ -165,7 +166,8 @@ DEV_EXEC_MUTAGEN_BIN=mutagen
 ```
 
 `DEV_EXEC_MUTAGEN_BIN` may be an executable name on `PATH` or an absolute path
-in the selected control environment. Confirm the existing session before
+in the selected control environment. Use an absolute path when non-interactive
+SSH has a minimal `PATH`. Confirm the existing session before
 testing. For a remote control host, run these commands there (or use
 `dev-exec doctor` after configuration):
 

@@ -25,7 +25,8 @@ dev-relay setup VM_ALIAS \
   --project AGENT_PROJECT_DIR AUTHORITATIVE_PROJECT_DIR \
   --shell /bin/zsh \
   --mutagen MUTAGEN_SESSION \
-  --mutagen-host MUTAGEN_CONTROL_HOST
+  --mutagen-host MUTAGEN_CONTROL_HOST \
+  --mutagen-bin MUTAGEN_BIN
 ```
 
 | Argument | Required? | Value and effect |
@@ -37,6 +38,7 @@ dev-relay setup VM_ALIAS \
 | `--shell SHELL` | Optional; requires `--project` | Shell executable used for delegated commands. Setup uses the current user's shell when available; `dev-exec` otherwise defaults to `/bin/sh`. |
 | `--mutagen SESSION` | Optional; requires `--project` | Existing Mutagen session name. By default the session is controlled locally; combine with `--mutagen-host` when its daemon runs in another approved environment. |
 | `--mutagen-host HOST` | Optional; requires `--project` and `--mutagen` | SSH alias reachable from the Agent environment where the existing Mutagen daemon/session runs. Setup stores it as `DEV_EXEC_MUTAGEN_HOST`; preflight commands are executed there. |
+| `--mutagen-bin BIN` | Optional; requires `--project` and `--mutagen` | Mutagen executable name or absolute path in the selected control environment. Setup stores it as `DEV_EXEC_MUTAGEN_BIN`; useful when non-interactive SSH has a minimal `PATH`. |
 | `--clear-mutagen` | Optional; requires `--project` | Explicitly remove managed `DEV_EXEC_MUTAGEN_SESSION`, `DEV_EXEC_MUTAGEN_BIN`, and `DEV_EXEC_MUTAGEN_HOST` assignments from an existing generated project config. Cannot be combined with `--mutagen`. |
 | `--repo REPOSITORY` | Optional; requires `--client` during `setup` | Git repository used for the canonical Skill checkout. |
 | `--ref REF` | Optional; requires `--client` during `setup` | Branch, tag, or commit installed from the Skill repository. Defaults to `main`. |
@@ -67,8 +69,9 @@ For a relay-managed VM, the Mac setup command can generate the project file afte
 ```
 
 When the existing session is controlled in another approved environment, add
-`--mutagen-host MUTAGEN_CONTROL_HOST` to the setup command. Do not create a
-second session with the same checkout pair.
+`--mutagen-host MUTAGEN_CONTROL_HOST` and, when `mutagen` is not on the
+non-interactive `PATH`, `--mutagen-bin MUTAGEN_BIN` to the setup command. Do not
+create a second session with the same checkout pair.
 
 Both paths are required because their relationship is project-specific. The generated file is marked as managed, written with mode `0600`, replaced atomically on repeat setup, and refused when an unmarked file or symlink already exists. When the VM project is a Git checkout, setup adds `.dev-exec.env` to `.git/info/exclude` when that local file is writable. It never adds the project-specific path to this Skill repository.
 

@@ -19,6 +19,7 @@ help_output=$("$relay" --help)
 printf '%s\n' "$help_output" | grep -Fq -- '--client NAME'
 printf '%s\n' "$help_output" | grep -Fq -- '--mutagen SESSION'
 printf '%s\n' "$help_output" | grep -Fq -- '--mutagen-host HOST'
+printf '%s\n' "$help_output" | grep -Fq -- '--mutagen-bin BIN'
 printf '%s\n' "$help_output" | grep -Fq -- '--clear-mutagen'
 printf '%s\n' "$help_output" | grep -Fq 'not install or create Mutagen'
 
@@ -127,6 +128,20 @@ if HOME="$test_home" \
       --mutagen project-sync \
       --mutagen-host -invalid >/dev/null 2>&1; then
   printf '%s\n' 'dev-relay setup unexpectedly accepted an option-like Mutagen control host' >&2
+  exit 1
+fi
+[ ! -s "$ssh_args" ]
+
+: > "$ssh_args"
+if HOME="$test_home" \
+  DEV_RELAY_CONFIG="$relay_config" \
+  FAKE_SSH_ARGS="$ssh_args" \
+  FAKE_SSH_STDIN="$ssh_stdin" \
+    "$relay" setup test-vm \
+      --project /project/on/vm /project/on/authoritative-environment \
+      --mutagen project-sync \
+      --mutagen-bin -invalid >/dev/null 2>&1; then
+  printf '%s\n' 'dev-relay setup unexpectedly accepted an option-like Mutagen executable' >&2
   exit 1
 fi
 [ ! -s "$ssh_args" ]

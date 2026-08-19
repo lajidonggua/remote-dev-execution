@@ -57,6 +57,7 @@ Then run on the Mac from this canonical checkout:
 | `--shell SHELL` | Optional | An executable shell in the authoritative environment, usually `/bin/zsh` or `/bin/sh`. Setup uses the current user's shell when available; `dev-exec` otherwise defaults to `/bin/sh`. |
 | `--mutagen SESSION` | Optional | The exact name of an existing Mutagen session. By default it is controlled where `dev-exec` runs; combine with `--mutagen-host` when the daemon/session is owned elsewhere. It requires `--project`. |
 | `--mutagen-host HOST` | Optional | SSH alias reachable from the Agent environment where the existing Mutagen daemon/session runs. It requires `--project` and `--mutagen`. |
+| `--mutagen-bin BIN` | Optional | Mutagen executable name or absolute path in the selected control environment. It requires `--project` and `--mutagen`; use it when non-interactive SSH has a minimal `PATH`. |
 | `--clear-mutagen` | Optional | Explicitly remove the managed Mutagen session, executable, and control-host settings from an existing generated project config. It requires `--project` and cannot be combined with `--mutagen`. |
 
 `--client` controls Skill installation only; it does not choose the execution
@@ -84,8 +85,9 @@ before SSH.
 
 When a reviewed session already exists, pass its name with
 `--mutagen EXISTING_SESSION` during relay setup. If its daemon runs in another
-approved environment, also pass `--mutagen-host MUTAGEN_CONTROL_HOST`; the
-wrapper runs the Mutagen preflight there. Omit Mutagen entirely only for a true
+approved environment, also pass `--mutagen-host MUTAGEN_CONTROL_HOST`; add
+`--mutagen-bin MUTAGEN_BIN` when that environment's non-interactive `PATH` does
+not contain `mutagen`. The wrapper runs the Mutagen preflight there. Omit Mutagen entirely only for a true
 shared checkout or another synchronization preflight with a blocking
 completion check. Separate checkouts with no verified synchronization must not
 be tested.
@@ -102,7 +104,7 @@ checkout or another independently verified synchronization mechanism.
 | --- | --- | --- |
 | First setup for VM-hosted Claude, separate checkouts, no session yet | `claude` | Omit, then run `setup-mutagen.sh --install` in the Agent project |
 | First setup with an existing reviewed Mutagen session controlled locally | `claude` | Existing session name |
-| Existing session controlled elsewhere | `claude` | Existing session plus `--mutagen-host` |
+| Existing session controlled elsewhere | `claude` | Existing session plus `--mutagen-host` and optional `--mutagen-bin` |
 | First setup for VM-hosted Claude, one shared checkout | `claude` | Omit |
 | Skill is already installed; project mapping is being refreshed | Omit | Use only when this project uses Mutagen |
 | Claude and Codex both run in the Agent environment | `both` | Depends on checkout synchronization |
@@ -762,11 +764,14 @@ session and its control alias during relay setup:
            /absolute/path/to/project/in/authoritative-environment \
   --shell /bin/zsh \
   --mutagen EXISTING_SESSION \
-  --mutagen-host MUTAGEN_CONTROL_HOST
+  --mutagen-host MUTAGEN_CONTROL_HOST \
+  --mutagen-bin MUTAGEN_BIN
 ```
 
 The Agent-side wrapper then runs the Mutagen `version`, `sync list`, and
 `sync flush` checks on `MUTAGEN_CONTROL_HOST` before every delegated command.
+`MUTAGEN_BIN` can be an absolute path when the control environment's
+non-interactive `PATH` does not include `mutagen`.
 The control alias must be reachable non-interactively from the Agent
 environment, and the session must report connected endpoints with no scan
 problems or conflicts.

@@ -54,6 +54,7 @@ Skill 的核心原则是：轻量的源码检查和编辑留在 AI 所在环境�
 | `--shell SHELL` | 可选 | 权威环境中实际存在的 shell，通常是 `/bin/zsh` 或 `/bin/sh`。省略时优先使用当前用户 shell，否则 `dev-exec` 默认使用 `/bin/sh`。 |
 | `--mutagen SESSION` | 可选 | 已存在的 Mutagen session 名称。默认由 `dev-exec` 所在环境控制；如果 daemon/session 在其他获准环境中，和 `--mutagen-host` 一起填写。必须和 `--project` 一起使用。 |
 | `--mutagen-host HOST` | 可选 | Agent 环境可以非交互连接的 SSH alias，指向实际拥有该 Mutagen daemon/session 的环境。必须和 `--project`、`--mutagen` 一起使用。 |
+| `--mutagen-bin BIN` | 可选 | 选定控制环境中的 Mutagen 可执行文件名或绝对路径。必须和 `--project`、`--mutagen` 一起使用；非交互 SSH 的 `PATH` 不包含 `mutagen` 时填写。 |
 | `--clear-mutagen` | 可选 | 显式移除已有生成配置中的 Mutagen session、可执行文件和控制主机设置。必须和 `--project` 一起使用，不能与 `--mutagen` 同时使用。 |
 
 `--client` 只决定安装哪个 Agent Skill，不决定命令去哪里执行。Claude Code
@@ -78,7 +79,8 @@ Agent 项目执行：
 
 如果已经有审核过的 session，在 relay setup 中填写
 `--mutagen EXISTING_SESSION`。如果它由其他获准环境中的 Mutagen daemon 控制，
-再填写 `--mutagen-host MUTAGEN_CONTROL_HOST`；wrapper 会在那里执行
+再填写 `--mutagen-host MUTAGEN_CONTROL_HOST`；如果非交互 SSH 的 `PATH` 中没有
+`mutagen`，再填写 `--mutagen-bin MUTAGEN_BIN`。wrapper 会在那里执行
 `version`、`sync list` 和 `sync flush` 前置检查。只有真正共享 checkout，
 或者其他同步工具具有可阻塞的完成检查时，才完全省略 Mutagen。两个独立
 checkout 没有可靠同步时不得运行测试。
@@ -93,7 +95,7 @@ checkout 没有可靠同步时不得运行测试。
 | --- | --- | --- |
 | Claude 首次 setup，两个 checkout 分离且还没有 session | `claude` | 先省略，然后在 Agent 项目运行 `setup-mutagen.sh --install` |
 | 首次 setup，但已有本地控制的审核过 Mutagen session | `claude` | 已存在的 session 名称 |
-| 已有由其他环境控制的 Mutagen session | `claude` | session 名称和 `--mutagen-host` |
+| 已有由其他环境控制的 Mutagen session | `claude` | session 名称、`--mutagen-host`，必要时加 `--mutagen-bin` |
 | Claude 首次 setup，双方使用同一个共享 checkout | `claude` | 省略 |
 | Skill 已安装，只更新当前项目映射 | 省略 | 仅当该项目使用 Mutagen 时填写 |
 | Agent 环境同时运行 Claude 和 Codex | `both` | 根据 checkout 同步方式决定 |
@@ -698,12 +700,14 @@ session。relay setup 时同时填写现有 session 名称和控制 alias：
            /absolute/path/to/project/in/authoritative-environment \
   --shell /bin/zsh \
   --mutagen EXISTING_SESSION \
-  --mutagen-host MUTAGEN_CONTROL_HOST
+  --mutagen-host MUTAGEN_CONTROL_HOST \
+  --mutagen-bin MUTAGEN_BIN
 ```
 
 之后 Agent 侧 wrapper 会在每次委托命令前，通过该控制 alias 执行 Mutagen 的
-`version`、`sync list` 和 `sync flush` 检查。控制 alias 必须能从 Agent 环境
-非交互连接，且 session 必须显示双方已连接、没有扫描问题或冲突。
+`version`、`sync list` 和 `sync flush` 检查。如果控制环境的非交互 `PATH` 中
+没有 `mutagen`，`MUTAGEN_BIN` 可以填写绝对路径。控制 alias 必须能从 Agent
+环境非交互连接，且 session 必须显示双方已连接、没有扫描问题或冲突。
 
 ## 常见问题
 
