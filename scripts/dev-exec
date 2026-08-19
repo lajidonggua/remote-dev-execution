@@ -100,6 +100,7 @@ saved_dir_set=0
 saved_shell_set=0
 saved_session_set=0
 saved_mutagen_bin_set=0
+saved_mutagen_host_set=0
 
 if [ "${DEV_EXEC_HOST+x}" = x ]; then
   saved_host_set=1
@@ -120,6 +121,10 @@ fi
 if [ "${DEV_EXEC_MUTAGEN_BIN+x}" = x ]; then
   saved_mutagen_bin_set=1
   saved_mutagen_bin=$DEV_EXEC_MUTAGEN_BIN
+fi
+if [ "${DEV_EXEC_MUTAGEN_HOST+x}" = x ]; then
+  saved_mutagen_host_set=1
+  saved_mutagen_host=$DEV_EXEC_MUTAGEN_HOST
 fi
 
 config_file=$(find_config) || config_file=
@@ -161,6 +166,9 @@ fi
 if [ "$saved_mutagen_bin_set" -eq 1 ]; then
   DEV_EXEC_MUTAGEN_BIN=$saved_mutagen_bin
 fi
+if [ "$saved_mutagen_host_set" -eq 1 ] && [ -n "$saved_mutagen_host" ]; then
+  DEV_EXEC_MUTAGEN_HOST=$saved_mutagen_host
+fi
 
 mutagen_health_template='{{- range . -}}{{- if .Paused -}}paused{{- else if not .Alpha.Connected -}}disconnected{{- else if not .Beta.Connected -}}disconnected{{- else if .LastError -}}error{{- else if .Conflicts -}}conflicts{{- else if .Alpha.ScanProblems -}}problems{{- else if .Alpha.TransitionProblems -}}problems{{- else if .Beta.ScanProblems -}}problems{{- else if .Beta.TransitionProblems -}}problems{{- else -}}ok{{- end -}}{{- end -}}'
 newline='
@@ -185,6 +193,36 @@ esac
 remote_shell=${DEV_EXEC_SHELL:-/bin/sh}
 reject_newline DEV_EXEC_SHELL "$remote_shell"
 
+mutagen_host=${DEV_EXEC_MUTAGEN_HOST:-}
+reject_newline DEV_EXEC_MUTAGEN_HOST "$mutagen_host"
+case $mutagen_host in
+  -*) fail 'DEV_EXEC_MUTAGEN_HOST must not begin with a hyphen' ;;
+esac
+if [ -n "$mutagen_host" ] && [ -z "${DEV_EXEC_MUTAGEN_SESSION:-}" ]; then
+  fail 'DEV_EXEC_MUTAGEN_HOST requires DEV_EXEC_MUTAGEN_SESSION'
+fi
+
+run_mutagen() {
+  if [ -n "$mutagen_host" ]; then
+    mutagen_command=
+    if ! quoted_mutagen_bin=$(shell_quote "$mutagen_bin"); then
+      return 64
+    fi
+    mutagen_command=$quoted_mutagen_bin
+    for mutagen_argument do
+      if ! quoted_mutagen_argument=$(shell_quote "$mutagen_argument"); then
+        return 64
+      fi
+      mutagen_command="$mutagen_command $quoted_mutagen_argument"
+    done
+    ssh -T -o BatchMode=yes -o ClearAllForwardings=yes \
+      -o ForwardAgent=no -o ForwardX11=no -o RequestTTY=no \
+      -o StrictHostKeyChecking=yes "$mutagen_host" "$mutagen_command"
+  else
+    "$mutagen_bin" "$@"
+  fi
+}
+
 if [ "$doctor_mode" -eq 1 ]; then
   doctor_say 'configuration: valid'
 fi
@@ -197,7 +235,19 @@ if [ -n "${DEV_EXEC_MUTAGEN_SESSION:-}" ]; then
 
   mutagen_bin=${DEV_EXEC_MUTAGEN_BIN:-mutagen}
   reject_newline DEV_EXEC_MUTAGEN_BIN "$mutagen_bin"
-  if ! command -v "$mutagen_bin" >/dev/null 2>&1; then
+  if [ -n "$mutagen_host" ]; then
+    if [ "$doctor_mode" -eq 1 ] && [ "$doctor_verbose" -eq 1 ]; then
+      run_mutagen version
+    else
+      run_mutagen version >/dev/null 2>&1
+    fi
+    mutagen_tool_status=$?
+  elif command -v "$mutagen_bin" >/dev/null 2>&1; then
+    mutagen_tool_status=0
+  else
+    mutagen_tool_status=127
+  fi
+  if [ "$mutagen_tool_status" -ne 0 ]; then
     if [ "$doctor_mode" -eq 1 ]; then
       doctor_fail 'synchronization tool: unavailable'
     else
@@ -209,9 +259,9 @@ if [ -n "${DEV_EXEC_MUTAGEN_SESSION:-}" ]; then
     doctor_say 'synchronization tool: available'
 
     if [ "$doctor_verbose" -eq 1 ]; then
-      "$mutagen_bin" sync list -- "$DEV_EXEC_MUTAGEN_SESSION"
+      run_mutagen sync list -- "$DEV_EXEC_MUTAGEN_SESSION"
     else
-      "$mutagen_bin" sync list -- "$DEV_EXEC_MUTAGEN_SESSION" >/dev/null 2>&1
+      run_mutagen sync list -- "$DEV_EXEC_MUTAGEN_SESSION" >/dev/null 2>&1
     fi
     session_status=$?
     if [ "$session_status" -ne 0 ]; then
@@ -222,9 +272,9 @@ if [ -n "${DEV_EXEC_MUTAGEN_SESSION:-}" ]; then
   fi
 
   if [ "$doctor_mode" -eq 1 ] && [ "$doctor_verbose" -eq 1 ]; then
-    "$mutagen_bin" sync flush -- "$DEV_EXEC_MUTAGEN_SESSION"
+    run_mutagen sync flush -- "$DEV_EXEC_MUTAGEN_SESSION"
   else
-    "$mutagen_bin" sync flush -- "$DEV_EXEC_MUTAGEN_SESSION" >/dev/null 2>&1
+    run_mutagen sync flush -- "$DEV_EXEC_MUTAGEN_SESSION" >/dev/null 2>&1
   fi
   sync_status=$?
   if [ "$sync_status" -ne 0 ]; then
@@ -237,9 +287,9 @@ if [ -n "${DEV_EXEC_MUTAGEN_SESSION:-}" ]; then
   fi
 
   if [ "$doctor_mode" -eq 1 ] && [ "$doctor_verbose" -eq 1 ]; then
-    sync_health=$("$mutagen_bin" sync list --template "$mutagen_health_template" -- "$DEV_EXEC_MUTAGEN_SESSION")
+    sync_health=$(run_mutagen sync list --template "$mutagen_health_template" -- "$DEV_EXEC_MUTAGEN_SESSION")
   else
-    sync_health=$("$mutagen_bin" sync list --template "$mutagen_health_template" -- "$DEV_EXEC_MUTAGEN_SESSION" 2>/dev/null)
+    sync_health=$(run_mutagen sync list --template "$mutagen_health_template" -- "$DEV_EXEC_MUTAGEN_SESSION" 2>/dev/null)
   fi
   health_status=$?
   if [ "$health_status" -ne 0 ]; then

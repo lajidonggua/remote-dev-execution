@@ -18,8 +18,14 @@ mkdir -p "$test_home" "$fake_bin"
 help_output=$("$relay" --help)
 printf '%s\n' "$help_output" | grep -Fq -- '--client NAME'
 printf '%s\n' "$help_output" | grep -Fq -- '--mutagen SESSION'
+printf '%s\n' "$help_output" | grep -Fq -- '--mutagen-host HOST'
 printf '%s\n' "$help_output" | grep -Fq -- '--clear-mutagen'
-printf '%s\n' "$help_output" | grep -Fq 'does not install or create Mutagen'
+printf '%s\n' "$help_output" | grep -Fq 'not install or create Mutagen'
+
+# ClearAllForwardings=yes suppresses command-line -R options as well, leaving a
+# healthy control connection with no reverse listener.
+sed -n '/^run_tunnel()/,/^}/p' "$relay" |
+  grep -Fq 'set -- "$@" -o ClearAllForwardings=no'
 
 cat > "$fake_ssh" <<'EOF'
 #!/bin/sh
@@ -107,6 +113,20 @@ if HOME="$test_home" \
       --project /project/on/vm /project/on/authoritative-environment \
       --mutagen -invalid >/dev/null 2>&1; then
   printf '%s\n' 'dev-relay setup unexpectedly accepted an option-like Mutagen session' >&2
+  exit 1
+fi
+[ ! -s "$ssh_args" ]
+
+: > "$ssh_args"
+if HOME="$test_home" \
+  DEV_RELAY_CONFIG="$relay_config" \
+  FAKE_SSH_ARGS="$ssh_args" \
+  FAKE_SSH_STDIN="$ssh_stdin" \
+    "$relay" setup test-vm \
+      --project /project/on/vm /project/on/authoritative-environment \
+      --mutagen project-sync \
+      --mutagen-host -invalid >/dev/null 2>&1; then
+  printf '%s\n' 'dev-relay setup unexpectedly accepted an option-like Mutagen control host' >&2
   exit 1
 fi
 [ ! -s "$ssh_args" ]

@@ -96,10 +96,10 @@ To generate a project configuration in the same operation, provide both checkout
 ```
 
 See [Relay Setup Options](configuration.md#relay-setup-options) for every value,
-accepted `--client` choice, and how to use `--mutagen` when a reviewed session
-already exists.
+accepted `--client` choice, and how to use `--mutagen` with optional
+`--mutagen-host` when a reviewed session already exists.
 
-The `--project` mapping writes a marked `.dev-exec.env` in the VM project, adds it to Git's local exclude when possible, and can be repeated safely. It refuses to replace a symlink or an unmarked existing file. `--shell` and `--mutagen` are optional. Existing managed Mutagen assignments are preserved on repeat unless `--mutagen` replaces the session or `--clear-mutagen` explicitly removes them. Both paths remain explicit because setup cannot safely infer which Mac checkout is authoritative.
+The `--project` mapping writes a marked `.dev-exec.env` in the VM project, adds it to Git's local exclude when possible, and can be repeated safely. It refuses to replace a symlink or an unmarked existing file. `--shell`, `--mutagen`, and `--mutagen-host` are optional. Existing managed Mutagen assignments are preserved on repeat unless `--mutagen` replaces the session or `--clear-mutagen` explicitly removes them. Both paths remain explicit because setup cannot safely infer which Mac checkout is authoritative.
 
 If setup reports an unmanaged project configuration, it has stopped before changing relay state. Keep the existing file and rerun without `--project` when it is already correct, or review and move it to a backup before asking setup to generate a managed file.
 
@@ -132,7 +132,7 @@ Run a project test only after doctor reports delegated execution ready and sourc
 
 Use `--client codex` or `--client both` as appropriate. Add `--repo` and `--ref` when installing from an internal repository or pinning a reviewed release.
 
-Relay setup establishes execution connectivity; it does not synchronize project files. If the VM and Mac use separate checkouts, run the bundled project-aware Mutagen helper or configure another mechanism with a blocking completion check before trusting remote results. For an existing session, add it as `DEV_EXEC_MUTAGEN_SESSION` or pass `--mutagen SESSION` during relay setup. `dev-exec` flushes the session, rejects disconnected endpoints, conflicts, and filesystem problems from structured state, and stops before SSH whenever freshness cannot be established. See [Mutagen Synchronization](mutagen.md).
+Relay setup establishes execution connectivity; it does not synchronize project files. If the VM and Mac use separate checkouts, run the bundled project-aware Mutagen helper or configure another mechanism with a blocking completion check before trusting remote results. For an existing session, add it as `DEV_EXEC_MUTAGEN_SESSION` or pass `--mutagen SESSION` during relay setup; if the session is controlled elsewhere, also pass `--mutagen-host CONTROL_HOST`. `dev-exec` flushes the session, rejects disconnected endpoints, conflicts, and filesystem problems from structured state, and stops before SSH whenever freshness cannot be established. See [Mutagen Synchronization](mutagen.md).
 
 Use the following manual procedure only when customizing keys, ports, paths, or trust installation, or when diagnosing a failed automated setup.
 

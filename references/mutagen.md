@@ -8,7 +8,7 @@ builds, tests, and debugging.
 ## Contents
 
 - [Choose Mutagen or a shared checkout](#choose-mutagen-or-a-shared-checkout)
-- [Where Mutagen must run](#where-mutagen-must-run)
+- [Where Mutagen runs](#where-mutagen-runs)
 - [Recommended project setup](#recommended-project-setup)
 - [Install without administrator access](#install-without-administrator-access)
 - [Configure an existing session](#configure-an-existing-session)
@@ -29,12 +29,23 @@ builds, tests, and debugging.
 Mutagen synchronizes two checkouts. It is not the SSH transport used by
 `dev-exec`, and it is not a shared checkout.
 
-## Where Mutagen must run
+## Where Mutagen runs
 
-Install and create the session in the environment where `dev-exec` runs. If
-Claude Code or Codex runs in a VM, Mutagen must be available in that VM. An
-installation only in the authoritative environment cannot perform the
-wrapper's local preflight.
+There are two supported control modes:
+
+1. **Agent-local (recommended for a new session):** install Mutagen and create
+   the session in the environment where `dev-exec` runs. This is what
+   `setup-mutagen.sh` configures.
+2. **Explicit remote control:** keep an existing session in another approved
+   environment and set both `DEV_EXEC_MUTAGEN_SESSION` and
+   `DEV_EXEC_MUTAGEN_HOST`. The wrapper runs the Mutagen CLI on that SSH alias
+   for `version`, `sync list`, and `sync flush`, then applies the same health
+   gate before delegated execution.
+
+Installing Mutagen only in another environment without
+`DEV_EXEC_MUTAGEN_HOST` does not satisfy the preflight. The control host must be
+reachable non-interactively from the Agent environment and must be the owner
+of the named session.
 
 The session uses:
 
@@ -140,7 +151,8 @@ one. Add its exact name during relay project setup:
 ```sh
 dev-relay setup VM_ALIAS \
   --project AGENT_PROJECT_DIR AUTHORITATIVE_PROJECT_DIR \
-  --mutagen EXISTING_SESSION
+  --mutagen EXISTING_SESSION \
+  --mutagen-host MUTAGEN_CONTROL_HOST
 ```
 
 Or add these assignments to the ignored project configuration:
@@ -148,10 +160,14 @@ Or add these assignments to the ignored project configuration:
 ```sh
 DEV_EXEC_MUTAGEN_SESSION=project-sync
 DEV_EXEC_MUTAGEN_BIN=mutagen
+# Only when the session is controlled in another environment.
+# DEV_EXEC_MUTAGEN_HOST=sync-control
 ```
 
-`DEV_EXEC_MUTAGEN_BIN` may be an executable name on `PATH` or an absolute path.
-Confirm the existing session before testing:
+`DEV_EXEC_MUTAGEN_BIN` may be an executable name on `PATH` or an absolute path
+in the selected control environment. Confirm the existing session before
+testing. For a remote control host, run these commands there (or use
+`dev-exec doctor` after configuration):
 
 ```sh
 mutagen sync list -- project-sync
@@ -182,7 +198,8 @@ tool outputs.
 For a configured session, every `dev-exec` command performs this blocking
 preflight before opening SSH:
 
-1. Run `mutagen sync flush -- SESSION` and wait for the cycle.
+1. Run `mutagen sync flush -- SESSION` and wait for the cycle, locally or on
+   `DEV_EXEC_MUTAGEN_HOST` when configured.
 2. Query structured session state with a fixed-token template.
 3. Reject disconnected endpoints, conflicts, last-session errors, scan
    problems, and transition problems.
@@ -217,6 +234,10 @@ mutagen sync flush -- project-sync
 mutagen sync pause -- project-sync
 mutagen sync resume -- project-sync
 ```
+
+When `DEV_EXEC_MUTAGEN_HOST` is set, run the same maintenance commands on the
+configured control host, or invoke them through its approved SSH alias. Do not
+start a second session with the same checkout pair from another Mutagen daemon.
 
 The Mutagen daemon starts on demand and persists session definitions. After a
 restart or network interruption, run `dev-exec doctor`; it will force a cycle

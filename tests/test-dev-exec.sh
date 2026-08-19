@@ -14,6 +14,18 @@ mkdir -p "$fake_bin" "$project"
 cat > "$fake_bin/ssh" <<'EOF'
 #!/bin/sh
 printf 'ssh-called\n' > "$FAKE_SSH_MARKER"
+if [ "${FAKE_MUTAGEN_REMOTE:-0}" = 1 ]; then
+  remote_command=
+  for argument do
+    remote_command=$argument
+  done
+  case $remote_command in
+    *mutagen*version*) exit 0 ;;
+    *mutagen*sync*list*--template*) printf 'ok'; exit 0 ;;
+    *mutagen*sync*list*) exit 0 ;;
+    *mutagen*sync*flush*) exit 0 ;;
+  esac
+fi
 printf 'ssh-argv:'
 for argument do
   printf '<%s>' "$argument"
@@ -246,6 +258,51 @@ fi
 [ "$status" -eq 69 ]
 grep -Fqx 'dev-exec: synchronization tool unavailable; remote command not started' "$missing_tool_error"
 [ ! -f "$missing_tool_marker" ]
+
+remote_project=$test_root/remote-mutagen-project
+mkdir -p "$remote_project"
+cat > "$remote_project/.dev-exec.env" <<'EOF'
+DEV_EXEC_HOST=test-host
+DEV_EXEC_DIR=/authoritative/project
+DEV_EXEC_SHELL=/bin/sh
+DEV_EXEC_MUTAGEN_SESSION=remote-session
+DEV_EXEC_MUTAGEN_HOST=mutagen-control
+EOF
+
+PATH="$fake_bin:$PATH" \
+FAKE_SSH_MARKER="$ssh_marker" \
+FAKE_MUTAGEN_REMOTE=1 \
+FAKE_SSH_STATUS=0 \
+  sh -c "cd '$remote_project' && '$wrapper' doctor" > "$doctor_output" 2> "$doctor_error"
+
+grep -Fqx 'dev-exec doctor: configuration: valid' "$doctor_output"
+grep -Fqx 'dev-exec doctor: synchronization tool: available' "$doctor_output"
+grep -Fqx 'dev-exec doctor: synchronization session: available' "$doctor_output"
+grep -Fqx 'dev-exec doctor: synchronization health: healthy' "$doctor_output"
+grep -Fqx 'dev-exec doctor: synchronization preflight: passed' "$doctor_output"
+grep -Fqx 'dev-exec doctor: authoritative execution: ready' "$doctor_output"
+[ ! -s "$doctor_error" ]
+
+host_only_project=$test_root/host-only-project
+mkdir -p "$host_only_project"
+cat > "$host_only_project/.dev-exec.env" <<'EOF'
+DEV_EXEC_HOST=test-host
+DEV_EXEC_DIR=/authoritative/project
+DEV_EXEC_MUTAGEN_HOST=mutagen-control
+EOF
+
+rm -f "$ssh_marker"
+status=0
+if PATH="$fake_bin:$PATH" \
+  FAKE_SSH_MARKER="$ssh_marker" \
+    sh -c "cd '$host_only_project' && '$wrapper' doctor" > "$doctor_output" 2> "$doctor_error"; then
+  status=0
+else
+  status=$?
+fi
+[ "$status" -eq 64 ]
+grep -Fqx 'dev-exec: DEV_EXEC_MUTAGEN_HOST requires DEV_EXEC_MUTAGEN_SESSION' "$doctor_error"
+[ ! -f "$ssh_marker" ]
 
 no_sync_project=$test_root/no-sync-project
 mkdir -p "$no_sync_project"

@@ -55,8 +55,9 @@ Then run on the Mac from this canonical checkout:
 | Second `--project` value | Required when using `--project` | The absolute path to the authoritative checkout where builds, tests, services, and debugging run. |
 | `--client CLIENT` | Optional, recommended on first setup | `claude`, `codex`, or `both`. It installs this Skill in the Agent environment. Restart that Agent after installation. |
 | `--shell SHELL` | Optional | An executable shell in the authoritative environment, usually `/bin/zsh` or `/bin/sh`. Setup uses the current user's shell when available; `dev-exec` otherwise defaults to `/bin/sh`. |
-| `--mutagen SESSION` | Optional | The exact name of an existing Mutagen session available where `dev-exec` runs. It requires `--project`; it is a session name, not a path or host. |
-| `--clear-mutagen` | Optional | Explicitly remove the managed Mutagen session and executable settings from an existing generated project config. It requires `--project` and cannot be combined with `--mutagen`. |
+| `--mutagen SESSION` | Optional | The exact name of an existing Mutagen session. By default it is controlled where `dev-exec` runs; combine with `--mutagen-host` when the daemon/session is owned elsewhere. It requires `--project`. |
+| `--mutagen-host HOST` | Optional | SSH alias reachable from the Agent environment where the existing Mutagen daemon/session runs. It requires `--project` and `--mutagen`. |
+| `--clear-mutagen` | Optional | Explicitly remove the managed Mutagen session, executable, and control-host settings from an existing generated project config. It requires `--project` and cannot be combined with `--mutagen`. |
 
 `--client` controls Skill installation only; it does not choose the execution
 destination. Use `claude` when Claude Code runs in the Agent environment,
@@ -82,14 +83,17 @@ conflicts, filesystem problems, or a failed flush stop the project command
 before SSH.
 
 When a reviewed session already exists, pass its name with
-`--mutagen EXISTING_SESSION` during relay setup instead. Omit Mutagen entirely
-only for a true shared checkout or another synchronization preflight with a
-blocking completion check. Separate checkouts with no verified synchronization
-must not be tested.
+`--mutagen EXISTING_SESSION` during relay setup. If its daemon runs in another
+approved environment, also pass `--mutagen-host MUTAGEN_CONTROL_HOST`; the
+wrapper runs the Mutagen preflight there. Omit Mutagen entirely only for a true
+shared checkout or another synchronization preflight with a blocking
+completion check. Separate checkouts with no verified synchronization must not
+be tested.
 
 When rerunning setup for an existing generated project config, the current
 Mutagen session and executable settings are preserved unless `--mutagen` replaces
-the session or `--clear-mutagen` explicitly removes them. This prevents a routine
+the session or `--clear-mutagen` explicitly removes them. This includes an
+optional Mutagen control-host assignment and prevents a routine
 relay refresh from silently disabling the source-freshness gate. Use
 `--clear-mutagen` only after confirming that the project now uses a shared
 checkout or another independently verified synchronization mechanism.
@@ -97,7 +101,8 @@ checkout or another independently verified synchronization mechanism.
 | Scenario | `--client` | `--mutagen` |
 | --- | --- | --- |
 | First setup for VM-hosted Claude, separate checkouts, no session yet | `claude` | Omit, then run `setup-mutagen.sh --install` in the Agent project |
-| First setup with an existing reviewed Mutagen session | `claude` | Existing session name |
+| First setup with an existing reviewed Mutagen session controlled locally | `claude` | Existing session name |
+| Existing session controlled elsewhere | `claude` | Existing session plus `--mutagen-host` |
 | First setup for VM-hosted Claude, one shared checkout | `claude` | Omit |
 | Skill is already installed; project mapping is being refreshed | Omit | Use only when this project uses Mutagen |
 | Claude and Codex both run in the Agent environment | `both` | Depends on checkout synchronization |
@@ -446,7 +451,7 @@ Then run this once from the Agent project:
 
 | Option | When to use it | Effect |
 | --- | --- | --- |
-| `--install` | Mutagen is not already available where `dev-exec` runs | Installs the pinned release into `~/.local/bin` without `sudo`. |
+| `--install` | Mutagen is not already available where `dev-exec` runs | Installs the pinned release into `~/.local/bin` without `sudo`. Do not use it when an existing session is intentionally controlled elsewhere. |
 | `--name SESSION` | Recommended for a stable team convention | Names the new session. If omitted, the helper derives a project-local name. |
 | `--ignore PATH` | A reproducible dependency, cache, or build directory must remain local | Adds one Mutagen ignore; repeat the option for additional paths. |
 | `--version VERSION` | The team has reviewed a different installer version | Selects the version used with `--install`. |
@@ -467,7 +472,9 @@ To install without creating a session, run:
 
 On an environment where Homebrew is already approved, use
 `brew install mutagen-io/mutagen/mutagen` instead. Install in the environment
-where `dev-exec` runs, not only in the authoritative environment.
+where `dev-exec` runs, or explicitly configure `DEV_EXEC_MUTAGEN_HOST` when an
+existing session is controlled elsewhere; installing it elsewhere without that
+setting is not enough.
 The Mutagen daemon starts on demand; normally there is no separate service to
 start. After a restart or network change, rerun doctor.
 
@@ -494,6 +501,8 @@ DEV_EXEC_DIR=/absolute/path/to/project/on/authoritative-machine
 DEV_EXEC_SHELL=/bin/zsh
 DEV_EXEC_MUTAGEN_SESSION=project-sync
 DEV_EXEC_MUTAGEN_BIN=mutagen
+# Set only when the Mutagen daemon/session is controlled elsewhere.
+# DEV_EXEC_MUTAGEN_HOST=sync-control
 ```
 
 Every `dev-exec` call now flushes the session and queries structured session
@@ -507,8 +516,9 @@ Healthy doctor output contains `synchronization tool: available`,
 `synchronization session: available`, `synchronization health: healthy`, and
 `synchronization preflight: passed` before `authoritative execution: ready`.
 
-Mutagen and its session must exist where `dev-exec` runs. Installing it only in
-the authoritative environment does not satisfy the Agent-side preflight.
+Mutagen and its session must exist where `dev-exec` runs unless
+`DEV_EXEC_MUTAGEN_HOST` explicitly points to the approved control environment.
+Installing it elsewhere without that setting does not satisfy the preflight.
 
 Mutagen does not make remote generated files automatically safe to keep. Before
 running formatters, generators, migrations, installs, or snapshot updates,
@@ -739,6 +749,28 @@ ssh dev-vm true
 ~/.local/share/remote-dev-execution/dev-exec -- npm test
 ```
 
+### Demo D: reuse a Mutagen session controlled elsewhere
+
+If Mutagen was already created in a separate approved environment, do not
+create a second session for the same checkout pair. Configure the existing
+session and its control alias during relay setup:
+
+```sh
+~/code/remote-dev-execution/scripts/dev-relay setup VM_ALIAS \
+  --client claude \
+  --project /absolute/path/to/project/in/agent-environment \
+           /absolute/path/to/project/in/authoritative-environment \
+  --shell /bin/zsh \
+  --mutagen EXISTING_SESSION \
+  --mutagen-host MUTAGEN_CONTROL_HOST
+```
+
+The Agent-side wrapper then runs the Mutagen `version`, `sync list`, and
+`sync flush` checks on `MUTAGEN_CONTROL_HOST` before every delegated command.
+The control alias must be reachable non-interactively from the Agent
+environment, and the session must report connected endpoints with no scan
+problems or conflicts.
+
 ## Troubleshooting
 
 | Symptom | Check |
@@ -747,8 +779,8 @@ ssh dev-vm true
 | `configuration not found` | Create `.dev-exec.env` in the project or a parent directory. |
 | SSH prompts for a password | Fix the ordinary SSH alias and keychain first; the wrapper is non-interactive. |
 | Remote directory fails | Confirm `DEV_EXEC_DIR` is absolute and exists on the authoritative machine. |
-| Mutagen executable is unavailable | Run `setup-mutagen.sh --install`, or correct `DEV_EXEC_MUTAGEN_BIN` where `dev-exec` runs. |
-| Mutagen session is unavailable | Confirm `DEV_EXEC_MUTAGEN_SESSION` with `mutagen sync list -- SESSION`; do not select an unrelated session. |
+| Mutagen executable is unavailable | Run `setup-mutagen.sh --install` where `dev-exec` runs, or set `DEV_EXEC_MUTAGEN_HOST` and correct `DEV_EXEC_MUTAGEN_BIN` for the approved control environment. |
+| Mutagen session is unavailable | Confirm `DEV_EXEC_MUTAGEN_SESSION` with `mutagen sync list -- SESSION` in its control environment; do not select an unrelated session. |
 | Mutagen health reports a disconnected endpoint, conflicts, or filesystem problems | Inspect `mutagen sync list --long -- SESSION`, restore the session, reconcile affected files, and rerun doctor. Do not bypass the health gate. |
 | Doctor reports `source freshness: not verified` | Confirm a shared checkout or complete the external sync before testing; connectivity alone is insufficient. |
 | Setup finds an unmanaged `.dev-exec.env` | Keep it and rerun without `--project`, or move it to a backup after review and rerun setup. It is never overwritten automatically. |

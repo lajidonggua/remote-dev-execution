@@ -14,6 +14,7 @@ usage() {
 Usage:
   dev-relay setup [VM_HOST] [--project VM_PROJECT_DIR MAC_PROJECT_DIR]
                     [--shell SHELL] [--mutagen SESSION]
+                    [--mutagen-host HOST]
                     [--clear-mutagen]
                     [--client claude|codex|both]
                     [--repo SKILL_REPO] [--ref SKILL_REF]
@@ -35,10 +36,14 @@ Setup values and options:
                        Existing absolute Agent and authoritative checkout
                        paths. Both values are required together.
   --shell SHELL        Shell executable in the authoritative environment.
-  --mutagen SESSION    Existing Mutagen session where dev-exec runs; requires
-                       --project. This does not install or create Mutagen.
-  --clear-mutagen      Explicitly remove the managed Mutagen session settings
-                       from the generated project configuration.
+  --mutagen SESSION    Existing Mutagen session; requires --project. By
+                       default it is controlled where dev-exec runs. This does
+                       not install or create Mutagen.
+  --mutagen-host HOST  SSH alias where the existing Mutagen daemon/session
+                       runs; requires --project and --mutagen.
+  --clear-mutagen      Explicitly remove the managed Mutagen session,
+                       executable, and control-host settings from the generated
+                       project configuration.
   --client NAME        Install the Skill for claude, codex, or both in the VM.
                        Optional for setup; defaults to claude for install-skill.
                        Restart the Agent after installation.
@@ -624,7 +629,9 @@ run_tunnel() {
 
   set -- "$@" -N -T
   set -- "$@" -o BatchMode=yes
-  set -- "$@" -o ClearAllForwardings=yes
+  # The outer alias is required to be free of unrelated forwards. Setting this
+  # to yes would also discard the explicit -R options added below.
+  set -- "$@" -o ClearAllForwardings=no
   set -- "$@" -o ExitOnForwardFailure=yes
   set -- "$@" -o ForwardAgent=no
   set -- "$@" -o ForwardX11=no
@@ -772,6 +779,7 @@ validate_project_request() {
   validate_project_path MAC_PROJECT_DIR "$project_mac_dir"
   validate_project_value DEV_EXEC_SHELL "$project_shell"
   validate_project_value DEV_EXEC_MUTAGEN_SESSION "$project_mutagen"
+  validate_project_value DEV_EXEC_MUTAGEN_HOST "$project_mutagen_host"
   if [ "${project_mutagen_set:-0}" -eq 1 ] && [ -z "$project_mutagen" ]; then
     fail "$EX_USAGE" '--mutagen requires a non-empty session name'
   fi
@@ -781,6 +789,12 @@ validate_project_request() {
   case $project_mutagen in
     -*) fail "$EX_USAGE" 'DEV_EXEC_MUTAGEN_SESSION must not begin with a hyphen' ;;
   esac
+  case $project_mutagen_host in
+    -*) fail "$EX_USAGE" 'DEV_EXEC_MUTAGEN_HOST must not begin with a hyphen' ;;
+  esac
+  if [ -n "$project_mutagen_host" ] && [ "$project_mutagen_set" -eq 0 ]; then
+    fail "$EX_USAGE" '--mutagen-host requires --mutagen during setup'
+  fi
 }
 
 validate_skill_request() {
@@ -857,6 +871,10 @@ write_vm_project_config() {
     ! quoted_mutagen=$(shell_quote_value "$project_mutagen"); then
     fail "$EX_UNAVAILABLE" 'cannot quote the Mutagen session'
   fi
+  if [ -n "$project_mutagen_host" ] &&
+    ! quoted_mutagen_host=$(shell_quote_value "$project_mutagen_host"); then
+    fail "$EX_UNAVAILABLE" 'cannot quote the Mutagen control host'
+  fi
 
   project_remote_script='set -eu
 umask 077
@@ -914,9 +932,11 @@ extract_assignment() {
 }
 preserved_mutagen_session=
 preserved_mutagen_bin=
+preserved_mutagen_host=
 if [ -f "$config" ] && [ "$clear_mutagen" -eq 0 ]; then
   preserved_mutagen_session=$(extract_assignment DEV_EXEC_MUTAGEN_SESSION "$config" || true)
   preserved_mutagen_bin=$(extract_assignment DEV_EXEC_MUTAGEN_BIN "$config" || true)
+  preserved_mutagen_host=$(extract_assignment DEV_EXEC_MUTAGEN_HOST "$config" || true)
 fi
 config_tmp=$config.tmp.$$
 if [ -e "$config_tmp" ] || [ -L "$config_tmp" ]; then
@@ -932,6 +952,10 @@ if [ "$clear_mutagen" -eq 0 ]; then
   if ! grep -Eq "^[[:space:]]*(export[[:space:]]+)?DEV_EXEC_MUTAGEN_BIN=" "$config_tmp" &&
     [ -n "$preserved_mutagen_bin" ]; then
     printf "%s\n" "$preserved_mutagen_bin" >> "$config_tmp"
+  fi
+  if ! grep -Eq "^[[:space:]]*(export[[:space:]]+)?DEV_EXEC_MUTAGEN_HOST=" "$config_tmp" &&
+    [ -n "$preserved_mutagen_host" ]; then
+    printf "%s\n" "$preserved_mutagen_host" >> "$config_tmp"
   fi
 fi
 chmod 0600 "$config_tmp"
@@ -969,6 +993,9 @@ printf "%s\n" "dev-relay: configured VM project $vm_project"'
     fi
     if [ -n "$project_mutagen" ]; then
       printf 'DEV_EXEC_MUTAGEN_SESSION=%s\n' "$quoted_mutagen"
+    fi
+    if [ -n "$project_mutagen_host" ]; then
+      printf 'DEV_EXEC_MUTAGEN_HOST=%s\n' "$quoted_mutagen_host"
     fi
   } | outer_ssh_command "$project_remote_script" ||
     fail "$EX_UNAVAILABLE" "cannot configure VM project: $project_vm_dir"
@@ -1224,6 +1251,8 @@ setup_relay() {
   project_shell_set=0
   project_mutagen=
   project_mutagen_set=0
+  project_mutagen_host=
+  project_mutagen_host_set=0
   project_clear_mutagen=0
   skill_client=
   skill_client_set=0
@@ -1255,6 +1284,13 @@ setup_relay() {
           fail "$EX_USAGE" '--mutagen requires a session name'
         project_mutagen=$2
         project_mutagen_set=1
+        shift 2
+        ;;
+      --mutagen-host)
+        [ "$#" -ge 2 ] ||
+          fail "$EX_USAGE" '--mutagen-host requires an SSH alias'
+        project_mutagen_host=$2
+        project_mutagen_host_set=1
         shift 2
         ;;
       --clear-mutagen)
@@ -1307,8 +1343,9 @@ setup_relay() {
   fi
   if [ "$project_requested" -eq 0 ]; then
     if [ -n "$project_shell" ] || [ -n "$project_mutagen" ] ||
+      [ -n "$project_mutagen_host" ] ||
       [ "$project_clear_mutagen" -eq 1 ]; then
-      fail "$EX_USAGE" '--shell, --mutagen, and --clear-mutagen require --project'
+      fail "$EX_USAGE" '--shell, --mutagen, --mutagen-host, and --clear-mutagen require --project'
     fi
   fi
   if [ "$project_requested" -eq 1 ] && [ -z "$project_shell" ]; then

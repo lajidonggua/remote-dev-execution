@@ -27,7 +27,7 @@ When the active agent runs in a VM, install this Skill in that VM's user-level d
 - Prefer `dev-relay setup VM_ALIAS --client CLIENT` for initial or repeatable deployment. It provisions dedicated keys, managed VM SSH entries, the VM wrapper, the Agent Skill, the relay, and an end-to-end check without administrator access.
 - When the VM and Mac project paths are known, add `--project VM_PROJECT_DIR MAC_PROJECT_DIR` (plus optional `--shell` and `--mutagen`) so setup generates the VM project's `.dev-exec.env` without manual editing. Keep both paths explicit; never infer an authoritative checkout.
 - Prefer Mutagen for separate checkouts. If no session exists, generate `.dev-exec.env` first without `--mutagen`, then, only when the user requests synchronization setup, run `scripts/setup-mutagen.sh --install --name SESSION` in the Agent project. Add project-specific `--ignore` values only after inspecting its manifests and generated directories.
-- Use `--mutagen SESSION` during relay setup only for a session that already exists where `dev-exec` runs.
+- Use `--mutagen SESSION` during relay setup only for a reviewed existing session. If its Mutagen daemon is in another approved environment, add `--mutagen-host CONTROL_HOST`; this makes the wrapper run its synchronization preflight there. Otherwise the session must be available where `dev-exec` runs.
 - When rerunning relay setup for a generated project config, omit `--mutagen` to preserve existing Mutagen assignments. Use `--clear-mutagen` only after explicitly confirming a shared checkout or another verified freshness mechanism.
 - Use `dev-relay install-skill --client CLIENT` to repair an existing relay whose Agent environment has the wrapper but not the Skill, then restart the Agent session.
 - Run `dev-relay status` on the Mac before diagnosing `dev-exec` through a relay.
@@ -45,7 +45,7 @@ When the active agent runs in a VM, install this Skill in that VM's user-level d
    - Do not rely on the doctor exit status alone: a shared checkout needs no synchronization command, so missing synchronization is a warning rather than a non-zero status.
    - Treat the reviewed `.dev-exec.env` as the declaration of the authoritative endpoint. Doctor verifies that declaration is reachable; it does not independently choose or identify the authoritative machine.
 3. Establish how current source reaches `DEV_EXEC_DIR` before trusting remote results.
-   - When `DEV_EXEC_MUTAGEN_SESSION` is configured, rely on the wrapper's mandatory flush and structured health check. Stop on disconnected endpoints, conflicts, session errors, scan problems, or transition problems even if the flush itself succeeded.
+   - When `DEV_EXEC_MUTAGEN_SESSION` is configured, rely on the wrapper's mandatory flush and structured health check. The wrapper uses `DEV_EXEC_MUTAGEN_HOST` when the session is controlled elsewhere. Stop on disconnected endpoints, conflicts, session errors, scan problems, or transition problems even if the flush itself succeeded.
    - Otherwise, confirm that `DEV_EXEC_DIR` is the same shared checkout or that another synchronization mechanism has completed.
    - Stop if source freshness is unknown. Do not validate an arbitrary remote checkout.
 4. Decide whether the command is environment-dependent and whether it mutates repository files.

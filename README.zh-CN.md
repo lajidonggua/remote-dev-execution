@@ -52,8 +52,9 @@ Skill 的核心原则是：轻量的源码检查和编辑留在 AI 所在环境�
 | `--project` 第二个值 | 使用 `--project` 时必需 | 权威环境中的项目 checkout 绝对路径，构建、测试、服务和调试会在这里运行。 |
 | `--client CLIENT` | 可选，首次 setup 推荐填写 | 只能填写 `claude`、`codex` 或 `both`，用于在 Agent 环境安装对应 Skill。安装后重启 Agent。 |
 | `--shell SHELL` | 可选 | 权威环境中实际存在的 shell，通常是 `/bin/zsh` 或 `/bin/sh`。省略时优先使用当前用户 shell，否则 `dev-exec` 默认使用 `/bin/sh`。 |
-| `--mutagen SESSION` | 可选 | `dev-exec` 所在环境中已经存在的 Mutagen session 名称。它不是路径或主机名，并且只能和 `--project` 一起使用。 |
-| `--clear-mutagen` | 可选 | 显式移除已有生成配置中的 Mutagen session 和可执行文件设置。必须和 `--project` 一起使用，不能与 `--mutagen` 同时使用。 |
+| `--mutagen SESSION` | 可选 | 已存在的 Mutagen session 名称。默认由 `dev-exec` 所在环境控制；如果 daemon/session 在其他获准环境中，和 `--mutagen-host` 一起填写。必须和 `--project` 一起使用。 |
+| `--mutagen-host HOST` | 可选 | Agent 环境可以非交互连接的 SSH alias，指向实际拥有该 Mutagen daemon/session 的环境。必须和 `--project`、`--mutagen` 一起使用。 |
+| `--clear-mutagen` | 可选 | 显式移除已有生成配置中的 Mutagen session、可执行文件和控制主机设置。必须和 `--project` 一起使用，不能与 `--mutagen` 同时使用。 |
 
 `--client` 只决定安装哪个 Agent Skill，不决定命令去哪里执行。Claude Code
 运行在 Agent 环境时填写 `claude`，Codex 填写 `codex`，两个客户端都运行时
@@ -76,9 +77,11 @@ Agent 项目执行：
 都会在 SSH 之前阻止项目命令。
 
 如果已经有审核过的 session，在 relay setup 中填写
-`--mutagen EXISTING_SESSION`。只有真正共享 checkout，或者其他同步工具具有
-可阻塞的完成检查时，才完全省略 Mutagen。两个独立 checkout 没有可靠同步时
-不得运行测试。
+`--mutagen EXISTING_SESSION`。如果它由其他获准环境中的 Mutagen daemon 控制，
+再填写 `--mutagen-host MUTAGEN_CONTROL_HOST`；wrapper 会在那里执行
+`version`、`sync list` 和 `sync flush` 前置检查。只有真正共享 checkout，
+或者其他同步工具具有可阻塞的完成检查时，才完全省略 Mutagen。两个独立
+checkout 没有可靠同步时不得运行测试。
 
 重复 setup 时，如果项目配置是已有的生成配置，当前 Mutagen session 和可执行
 文件设置会默认保留；只有传入 `--mutagen` 才会替换 session，传入
@@ -89,7 +92,8 @@ Agent 项目执行：
 | 场景 | `--client` | `--mutagen` |
 | --- | --- | --- |
 | Claude 首次 setup，两个 checkout 分离且还没有 session | `claude` | 先省略，然后在 Agent 项目运行 `setup-mutagen.sh --install` |
-| 首次 setup，但已有审核过的 Mutagen session | `claude` | 已存在的 session 名称 |
+| 首次 setup，但已有本地控制的审核过 Mutagen session | `claude` | 已存在的 session 名称 |
+| 已有由其他环境控制的 Mutagen session | `claude` | session 名称和 `--mutagen-host` |
 | Claude 首次 setup，双方使用同一个共享 checkout | `claude` | 省略 |
 | Skill 已安装，只更新当前项目映射 | 省略 | 仅当该项目使用 Mutagen 时填写 |
 | Agent 环境同时运行 Claude 和 Codex | `both` | 根据 checkout 同步方式决定 |
@@ -424,8 +428,9 @@ exclude，并执行 doctor。如果 `.dev-exec.env` 已被 Git 跟踪，它会�
 ```
 
 该环境已经批准 Homebrew 时，也可以执行
-`brew install mutagen-io/mutagen/mutagen`。不要只在权威环境安装；前置检查在
-`dev-exec` 所在环境执行。
+`brew install mutagen-io/mutagen/mutagen`。如果现有 session 由其他获准环境
+控制，则应配置 `DEV_EXEC_MUTAGEN_HOST`；只在其他环境安装而不配置该变量，
+前置检查仍无法执行。
 Mutagen daemon 会按需自动启动，通常不需要单独启动服务。重启或网络变化后
 重新运行 doctor 即可。
 
@@ -451,6 +456,8 @@ DEV_EXEC_DIR=/absolute/path/to/project/on/authoritative-machine
 DEV_EXEC_SHELL=/bin/zsh
 DEV_EXEC_MUTAGEN_SESSION=project-sync
 DEV_EXEC_MUTAGEN_BIN=mutagen
+# 只有当 Mutagen daemon/session 由其他环境控制时才填写：
+# DEV_EXEC_MUTAGEN_HOST=sync-control
 ```
 
 以后每次 `dev-exec` 都会先 flush，再查询结构化健康状态，然后才启动 SSH。
@@ -462,8 +469,9 @@ session 不存在、端点断开、冲突、session error、扫描问题、写�
 `synchronization session: available`、`synchronization health: healthy`、
 `synchronization preflight: passed` 和 `authoritative execution: ready`。
 
-Mutagen 和 session 必须存在于 `dev-exec` 所在环境。只安装在权威环境不能
-完成 Agent 侧前置检查。
+Mutagen 和 session 默认存在于 `dev-exec` 所在环境；如果 session 在其他获准
+环境中，设置 `DEV_EXEC_MUTAGEN_HOST` 后 wrapper 会通过该 alias 执行前置检查。
+只在其他环境安装、却没有配置这个变量，不能完成 Agent 侧前置检查。
 
 运行 formatter、generator、migration、install 或更新 snapshot 前，先确定
 生成文件由哪一侧拥有，以及如何安全回传到编辑环境。Mutagen 不会替你解决
@@ -678,6 +686,25 @@ ssh dev-vm true
 ~/.local/share/remote-dev-execution/dev-exec -- npm test
 ```
 
+### Demo D：复用由其他环境控制的 Mutagen session
+
+如果 Mutagen 已经在另一个获准环境中创建，不要为同一对 checkout 再创建第二个
+session。relay setup 时同时填写现有 session 名称和控制 alias：
+
+```sh
+~/code/remote-dev-execution/scripts/dev-relay setup VM_ALIAS \
+  --client claude \
+  --project /absolute/path/to/project/in/agent-environment \
+           /absolute/path/to/project/in/authoritative-environment \
+  --shell /bin/zsh \
+  --mutagen EXISTING_SESSION \
+  --mutagen-host MUTAGEN_CONTROL_HOST
+```
+
+之后 Agent 侧 wrapper 会在每次委托命令前，通过该控制 alias 执行 Mutagen 的
+`version`、`sync list` 和 `sync flush` 检查。控制 alias 必须能从 Agent 环境
+非交互连接，且 session 必须显示双方已连接、没有扫描问题或冲突。
+
 ## 常见问题
 
 | 现象 | 检查方式 |
@@ -686,8 +713,8 @@ ssh dev-vm true
 | `configuration not found` | 确认当前目录在目标项目树内。 |
 | SSH 要求输入密码 | 先修复普通 SSH alias 和 keychain；wrapper 本身是非交互的。 |
 | 远程目录不存在 | 确认 `DEV_EXEC_DIR` 是权威机器上的绝对路径。 |
-| Mutagen executable unavailable | 在 `dev-exec` 所在环境运行 `setup-mutagen.sh --install`，或修正 `DEV_EXEC_MUTAGEN_BIN`。 |
-| Mutagen session unavailable | 用 `mutagen sync list -- SESSION` 核对 `DEV_EXEC_MUTAGEN_SESSION`，不要换成未审核的 session。 |
+| Mutagen executable unavailable | 在 `dev-exec` 所在环境运行 `setup-mutagen.sh --install`，或者设置 `DEV_EXEC_MUTAGEN_HOST` 并修正控制环境中的 `DEV_EXEC_MUTAGEN_BIN`。 |
+| Mutagen session unavailable | 在 session 所属控制环境中用 `mutagen sync list -- SESSION` 核对 `DEV_EXEC_MUTAGEN_SESSION`，不要换成未审核的 session。 |
 | Mutagen health 报告端点断开、冲突或文件系统问题 | 用户运行 `mutagen sync list --long -- SESSION`，恢复 session、处理相关文件后重跑 doctor，不要绕过健康检查。 |
 | doctor 显示 `source freshness: not verified` | 先确认共享 checkout 或完成外部同步；仅连通不能证明测试使用了当前源码。 |
 | setup 发现未托管的 `.dev-exec.env` | 保留文件并去掉 `--project` 重跑；或者审核后把它移为备份，再让 setup 生成。脚本不会自动覆盖。 |
