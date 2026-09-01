@@ -244,7 +244,7 @@ Run from the VM project:
 
 ```sh
 ~/code/remote-dev-execution/scripts/dev-exec doctor
-~/code/remote-dev-execution/scripts/dev-exec -- npm test
+~/code/remote-dev-execution/scripts/dev-exec summary -- npm test
 ```
 
 Skip the test when doctor reports failed delegated execution or unverified source freshness. The existing `dev-exec` stdout, stderr, exit-status, source-freshness, and Mutagen rules still apply. Use the privacy-safe prompt and observable checks in [Agent Execution Validation](agent-validation.md) when testing Agent behavior.

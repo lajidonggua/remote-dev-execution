@@ -26,6 +26,13 @@ if [ "${FAKE_MUTAGEN_REMOTE:-0}" = 1 ]; then
     *mutagen*sync*flush*) exit 0 ;;
   esac
 fi
+if [ "${FAKE_SSH_EXEC:-0}" = 1 ]; then
+  remote_command=
+  for argument do
+    remote_command=$argument
+  done
+  exec sh -c "$remote_command"
+fi
 printf 'ssh-argv:'
 for argument do
   printf '<%s>' "$argument"
@@ -372,5 +379,176 @@ fi
 [ "$status" -eq 64 ]
 grep -Fqx 'dev-exec: DEV_EXEC_HOST must not contain a newline' "$doctor_error"
 ! grep -Fq 'private-host' "$doctor_error"
+
+summary_authoritative=$test_root/summary-authoritative
+summary_project=$test_root/summary-project
+summary_logs=$test_root/summary-logs
+mkdir -p "$summary_authoritative" "$summary_project"
+cat > "$summary_project/.dev-exec.env" <<EOF
+DEV_EXEC_HOST=test-host
+DEV_EXEC_DIR=$summary_authoritative
+DEV_EXEC_SHELL=/bin/sh
+EOF
+
+summary_output=$test_root/summary-output
+summary_error=$test_root/summary-error
+summary_command='i=1; while [ "$i" -le 300 ]; do printf "stdout-%03d\n" "$i"; printf "stderr-%03d\n" "$i" >&2; i=$((i + 1)); done'
+PATH="$fake_bin:$PATH" \
+FAKE_SSH_MARKER="$ssh_marker" \
+FAKE_SSH_EXEC=1 \
+DEV_EXEC_LOG_DIR="$summary_logs" \
+SUMMARY_COMMAND="$summary_command" \
+  sh -c "cd '$summary_project' && '$wrapper' summary \"\$SUMMARY_COMMAND\"" \
+  > "$summary_output" 2> "$summary_error"
+
+grep -Fq 'dev-exec result: run=run.' "$summary_output"
+grep -Fq 'status=succeeded exit=0' "$summary_output"
+grep -Fq 'stdout-300' "$summary_output"
+! grep -Fq 'stdout-001' "$summary_output"
+grep -Fq 'stderr-300' "$summary_error"
+! grep -Fq 'stderr-001' "$summary_error"
+summary_run_id=$(sed -n 's/^dev-exec result: run=\([^ ]*\).*/\1/p' "$summary_output")
+[ -n "$summary_run_id" ]
+grep -Fq 'stdout-001' "$summary_logs/$summary_run_id/stdout.log"
+grep -Fq 'stdout-300' "$summary_logs/$summary_run_id/stdout.log"
+grep -Fq 'stderr-001' "$summary_logs/$summary_run_id/stderr.log"
+grep -Fqx 'exit_status: 0' "$summary_logs/$summary_run_id/meta"
+
+logs_output=$test_root/logs-output
+DEV_EXEC_LOG_DIR="$summary_logs" \
+  "$wrapper" logs "$summary_run_id" --stdout --tail 2 --max-bytes 128 > "$logs_output"
+grep -Fq 'stdout-300' "$logs_output"
+grep -Fq 'stdout-299' "$logs_output"
+! grep -Fq 'stdout-298' "$logs_output"
+
+DEV_EXEC_LOG_DIR="$summary_logs" \
+  "$wrapper" logs "$summary_run_id" --stderr --match 'stderr-150' --context 1 > "$logs_output"
+grep -Fq 'stderr-149' "$logs_output"
+grep -Fq 'stderr-150' "$logs_output"
+grep -Fq 'stderr-151' "$logs_output"
+! grep -Fq 'stderr-001' "$logs_output"
+
+failure_command='printf "failure-stdout\n"; i=1; while [ "$i" -le 500 ]; do printf "failure-stderr-%03d\n" "$i" >&2; i=$((i + 1)); done; exit 7'
+status=0
+if PATH="$fake_bin:$PATH" \
+  FAKE_SSH_MARKER="$ssh_marker" \
+  FAKE_SSH_EXEC=1 \
+  DEV_EXEC_LOG_DIR="$summary_logs" \
+  FAILURE_COMMAND="$failure_command" \
+    sh -c "cd '$summary_project' && '$wrapper' --output=summary \"\$FAILURE_COMMAND\"" \
+    > "$summary_output" 2> "$summary_error"; then
+  status=0
+else
+  status=$?
+fi
+[ "$status" -eq 7 ]
+grep -Fq 'status=failed exit=7' "$summary_output"
+grep -Fq 'failure-stdout' "$summary_output"
+grep -Fq 'failure-stderr-500' "$summary_error"
+! grep -Fq 'failure-stderr-001' "$summary_error"
+failure_run_id=$(sed -n 's/^dev-exec result: run=\([^ ]*\).*/\1/p' "$summary_output")
+grep -Fqx 'exit_status: 7' "$summary_logs/$failure_run_id/meta"
+grep -Fq 'failure-stderr-001' "$summary_logs/$failure_run_id/stderr.log"
+
+long_line_command='awk "BEGIN { for (i = 0; i < 50000; i++) printf \"x\"; printf \"END\\n\" }"'
+PATH="$fake_bin:$PATH" \
+FAKE_SSH_MARKER="$ssh_marker" \
+FAKE_SSH_EXEC=1 \
+DEV_EXEC_LOG_DIR="$summary_logs" \
+LONG_LINE_COMMAND="$long_line_command" \
+  sh -c "cd '$summary_project' && '$wrapper' --summary \"\$LONG_LINE_COMMAND\"" \
+  > "$summary_output" 2> "$summary_error"
+summary_size=$(wc -c < "$summary_output" | tr -d '[:space:]')
+[ "$summary_size" -lt 3000 ]
+grep -Fq 'END' "$summary_output"
+long_line_run_id=$(sed -n 's/^dev-exec result: run=\([^ ]*\).*/\1/p' "$summary_output")
+long_line_size=$(wc -c < "$summary_logs/$long_line_run_id/stdout.log" | tr -d '[:space:]')
+[ "$long_line_size" -gt 50000 ]
+
+nul_command="printf 'before\\000after\\n'"
+PATH="$fake_bin:$PATH" \
+FAKE_SSH_MARKER="$ssh_marker" \
+FAKE_SSH_EXEC=1 \
+DEV_EXEC_LOG_DIR="$summary_logs" \
+NUL_COMMAND="$nul_command" \
+  sh -c "cd '$summary_project' && '$wrapper' summary \"\$NUL_COMMAND\"" \
+  > "$summary_output" 2> "$summary_error"
+grep -Fq 'before?after' "$summary_output"
+nul_run_id=$(sed -n 's/^dev-exec result: run=\([^ ]*\).*/\1/p' "$summary_output")
+raw_nul_count=$(LC_ALL=C tr -cd '\000' < "$summary_logs/$nul_run_id/stdout.log" | wc -c | tr -d '[:space:]')
+[ "$raw_nul_count" -eq 1 ]
+display_nul_count=$(LC_ALL=C tr -cd '\000' < "$summary_output" | wc -c | tr -d '[:space:]')
+[ "$display_nul_count" -eq 0 ]
+
+noisy_summary_project=$test_root/noisy-summary-project
+mkdir -p "$noisy_summary_project"
+cat > "$noisy_summary_project/.dev-exec.env" <<EOF
+printf '%s\n' 'summary-private-config-output'
+printf '%s\n' 'summary-private-config-error' >&2
+DEV_EXEC_HOST=test-host
+DEV_EXEC_DIR=$summary_authoritative
+DEV_EXEC_SHELL=/bin/sh
+EOF
+PATH="$fake_bin:$PATH" \
+FAKE_SSH_MARKER="$ssh_marker" \
+FAKE_SSH_EXEC=1 \
+DEV_EXEC_LOG_DIR="$summary_logs" \
+  sh -c "cd '$noisy_summary_project' && '$wrapper' summary -- true" \
+  > "$summary_output" 2> "$summary_error"
+! grep -Fq 'summary-private-config' "$summary_output"
+! grep -Fq 'summary-private-config' "$summary_error"
+
+status=0
+if DEV_EXEC_LOG_DIR="$summary_logs" \
+    "$wrapper" logs '../outside' > "$logs_output" 2> "$summary_error"; then
+  status=0
+else
+  status=$?
+fi
+[ "$status" -eq 64 ]
+grep -Fqx 'dev-exec: invalid dev-exec run ID' "$summary_error"
+
+status=0
+if DEV_EXEC_LOG_DIR="$summary_logs" \
+    "$wrapper" logs "$summary_run_id" --max-bytes 16385 > "$logs_output" 2> "$summary_error"; then
+  status=0
+else
+  status=$?
+fi
+[ "$status" -eq 64 ]
+grep -Fqx 'dev-exec: --max-bytes cannot exceed 16384 bytes' "$summary_error"
+
+status=0
+if DEV_EXEC_LOG_DIR="$summary_logs" \
+    "$wrapper" logs "$summary_run_id" --tail 201 > "$logs_output" 2> "$summary_error"; then
+  status=0
+else
+  status=$?
+fi
+[ "$status" -eq 64 ]
+grep -Fqx 'dev-exec: --tail cannot exceed 200 lines' "$summary_error"
+
+malicious_run=$summary_logs/run.malicious
+mkdir -p "$malicious_run"
+printf '%s\n' 'run_id: run.malicious' > "$malicious_run/meta"
+ln -s "$summary_logs/$summary_run_id/stdout.log" "$malicious_run/stdout.log"
+printf '%s\n' 'safe' > "$malicious_run/stderr.log"
+status=0
+if DEV_EXEC_LOG_DIR="$summary_logs" \
+    "$wrapper" logs run.malicious > "$logs_output" 2> "$summary_error"; then
+  status=0
+else
+  status=$?
+fi
+[ "$status" -eq 64 ]
+grep -Fqx 'dev-exec: refusing to read a symlinked dev-exec run file: stdout.log' "$summary_error"
+
+PATH="$fake_bin:$PATH" \
+FAKE_SSH_MARKER="$ssh_marker" \
+FAKE_SSH_EXEC=1 \
+  sh -c "cd '$summary_project' && '$wrapper' stream -- printf explicit-stream" \
+  > "$summary_output" 2> "$summary_error"
+grep -Fq 'explicit-stream' "$summary_output"
+! grep -Fq 'dev-exec result:' "$summary_output"
 
 printf '%s\n' 'test-dev-exec: all checks passed'

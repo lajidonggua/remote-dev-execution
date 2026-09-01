@@ -6,6 +6,11 @@ usage() {
   cat <<'EOF'
 Usage:
   dev-exec doctor [--verbose]
+  dev-exec summary -- command [arg ...]
+  dev-exec summary 'shell command with pipes or redirections'
+  dev-exec logs RUN_ID [--stdout|--stderr] [--tail LINES]
+                         [--max-bytes BYTES] [--match ERE] [--context LINES]
+  dev-exec stream -- command [arg ...]
   dev-exec -- command [arg ...]
   dev-exec 'shell command with pipes or redirections'
 
@@ -16,6 +21,11 @@ DEV_EXEC_MUTAGEN_HOST), and runs the command over SSH.
 The doctor command verifies configuration, synchronization preflight, and
 delegated execution without disclosing infrastructure details. --verbose
 shows the underlying diagnostic output.
+
+Summary mode retains complete stdout and stderr in a private local run log,
+returns bounded excerpts, and preserves SSH's exit status. Use logs with the
+reported run ID for bounded follow-up inspection. Stream mode is the legacy
+unbounded behavior and remains the default for compatibility.
 EOF
 }
 
@@ -62,9 +72,209 @@ reject_newline() {
   esac
 }
 
+require_positive_integer() {
+  value_name=$1
+  value=$2
+  case $value in
+    ''|*[!0-9]*|0) fail "$value_name must be a positive integer" ;;
+  esac
+}
+
+require_nonnegative_integer() {
+  value_name=$1
+  value=$2
+  case $value in
+    ''|*[!0-9]*) fail "$value_name must be a non-negative integer" ;;
+  esac
+}
+
+resolve_log_dir() {
+  if [ -n "${DEV_EXEC_LOG_DIR:-}" ]; then
+    resolved_log_dir=$DEV_EXEC_LOG_DIR
+  elif [ -n "${XDG_STATE_HOME:-}" ]; then
+    resolved_log_dir=$XDG_STATE_HOME/remote-dev-execution/logs
+  elif [ -n "${HOME:-}" ]; then
+    resolved_log_dir=$HOME/.local/state/remote-dev-execution/logs
+  else
+    fail 'summary and logs require DEV_EXEC_LOG_DIR, XDG_STATE_HOME, or HOME'
+  fi
+  reject_newline DEV_EXEC_LOG_DIR "$resolved_log_dir"
+  case $resolved_log_dir in
+    /*) ;;
+    *) fail 'the dev-exec log directory must be an absolute path' ;;
+  esac
+}
+
+prepare_log_dir() {
+  resolve_log_dir
+  if [ -L "$resolved_log_dir" ]; then
+    fail 'refusing to use a symlinked dev-exec log directory'
+  fi
+  mkdir -p "$resolved_log_dir" || fail 'cannot create the dev-exec log directory'
+  [ -d "$resolved_log_dir" ] || fail 'the dev-exec log path is not a directory'
+  chmod 0700 "$resolved_log_dir" || fail 'cannot secure the dev-exec log directory'
+}
+
+file_bytes() {
+  wc -c < "$1" | tr -d '[:space:]'
+}
+
+file_lines() {
+  wc -l < "$1" | tr -d '[:space:]'
+}
+
+emit_excerpt_stdout() {
+  excerpt_file=$1
+  excerpt_label=$2
+  excerpt_lines=$3
+  excerpt_bytes=$4
+  [ -s "$excerpt_file" ] || return 0
+  printf '\n--- %s (last %s lines, at most %s bytes) ---\n' \
+    "$excerpt_label" "$excerpt_lines" "$excerpt_bytes"
+  tail -n "$excerpt_lines" "$excerpt_file" | tail -c "$excerpt_bytes" |
+    LC_ALL=C tr '\000' '?'
+  printf '\n'
+}
+
+emit_excerpt_stderr() {
+  excerpt_file=$1
+  excerpt_label=$2
+  excerpt_lines=$3
+  excerpt_bytes=$4
+  [ -s "$excerpt_file" ] || return 0
+  {
+    printf '\n--- %s (last %s lines, at most %s bytes) ---\n' \
+      "$excerpt_label" "$excerpt_lines" "$excerpt_bytes"
+    tail -n "$excerpt_lines" "$excerpt_file" | tail -c "$excerpt_bytes" |
+      LC_ALL=C tr '\000' '?'
+    printf '\n'
+  } >&2
+}
+
+validate_run_id() {
+  case $1 in
+    run.[A-Za-z0-9]* ) ;;
+    *) fail 'invalid dev-exec run ID' ;;
+  esac
+  case $1 in
+    *[!A-Za-z0-9._-]*) fail 'invalid dev-exec run ID' ;;
+  esac
+}
+
+emit_log_file() {
+  query_file=$1
+  query_label=$2
+  query_tail=$3
+  query_bytes=$4
+  query_pattern=$5
+  query_context=$6
+
+  printf '\n--- %s (up to %s lines / %s bytes) ---\n' \
+    "$query_label" "$query_tail" "$query_bytes"
+  if [ -n "$query_pattern" ]; then
+    if ! grep -E -q -- "$query_pattern" "$query_file"; then
+      printf '%s\n' '(no matches)'
+      return 0
+    fi
+    grep -aE -n -C "$query_context" -- "$query_pattern" "$query_file" |
+      tail -n "$query_tail" | tail -c "$query_bytes" | LC_ALL=C tr '\000' '?'
+  else
+    tail -n "$query_tail" "$query_file" | tail -c "$query_bytes" |
+      LC_ALL=C tr '\000' '?'
+  fi
+  printf '\n'
+}
+
+show_logs() {
+  [ "$#" -gt 0 ] || fail 'logs requires a run ID'
+  logs_run_id=$1
+  shift
+  validate_run_id "$logs_run_id"
+  logs_stream=both
+  logs_tail=80
+  logs_bytes=8192
+  logs_pattern=
+  logs_context=3
+  while [ "$#" -gt 0 ]; do
+    case $1 in
+      --stdout) logs_stream=stdout; shift ;;
+      --stderr) logs_stream=stderr; shift ;;
+      --tail)
+        [ "$#" -ge 2 ] || fail '--tail requires a value'
+        logs_tail=$2
+        require_positive_integer --tail "$logs_tail"
+        shift 2
+        ;;
+      --max-bytes)
+        [ "$#" -ge 2 ] || fail '--max-bytes requires a value'
+        logs_bytes=$2
+        require_positive_integer --max-bytes "$logs_bytes"
+        shift 2
+        ;;
+      --match)
+        [ "$#" -ge 2 ] || fail '--match requires a value'
+        logs_pattern=$2
+        reject_newline --match "$logs_pattern"
+        shift 2
+        ;;
+      --context)
+        [ "$#" -ge 2 ] || fail '--context requires a value'
+        logs_context=$2
+        require_nonnegative_integer --context "$logs_context"
+        shift 2
+        ;;
+      *) fail "unknown logs option: $1" ;;
+    esac
+  done
+
+  if [ -n "$logs_pattern" ]; then
+    grep_validation_status=0
+    printf '' | grep -E -- "$logs_pattern" >/dev/null 2>&1 || grep_validation_status=$?
+    [ "$grep_validation_status" -le 1 ] || fail 'invalid extended regular expression for --match'
+  fi
+  case $logs_tail in
+    ????*) fail '--tail cannot exceed 200 lines' ;;
+  esac
+  [ "$logs_tail" -le 200 ] || fail '--tail cannot exceed 200 lines'
+  case $logs_bytes in
+    ??????*) fail '--max-bytes cannot exceed 16384 bytes' ;;
+  esac
+  [ "$logs_bytes" -le 16384 ] || fail '--max-bytes cannot exceed 16384 bytes'
+  case $logs_context in
+    ???*) fail '--context cannot exceed 20 lines' ;;
+  esac
+  [ "$logs_context" -le 20 ] || fail '--context cannot exceed 20 lines'
+
+  prepare_log_dir
+  logs_run_dir=$resolved_log_dir/$logs_run_id
+  [ -d "$logs_run_dir" ] || fail 'dev-exec run ID not found'
+  [ ! -L "$logs_run_dir" ] || fail 'refusing to read a symlinked dev-exec run directory'
+  for logs_file_name in meta stdout.log stderr.log; do
+    logs_file=$logs_run_dir/$logs_file_name
+    [ -f "$logs_file" ] || fail "dev-exec run file is missing: $logs_file_name"
+    [ ! -L "$logs_file" ] || fail "refusing to read a symlinked dev-exec run file: $logs_file_name"
+  done
+  sed -n '1,12p' "$logs_run_dir/meta"
+  case $logs_stream in
+    stdout)
+      emit_log_file "$logs_run_dir/stdout.log" stdout "$logs_tail" "$logs_bytes" "$logs_pattern" "$logs_context"
+      ;;
+    stderr)
+      emit_log_file "$logs_run_dir/stderr.log" stderr "$logs_tail" "$logs_bytes" "$logs_pattern" "$logs_context"
+      ;;
+    both)
+      emit_log_file "$logs_run_dir/stderr.log" stderr "$logs_tail" "$logs_bytes" "$logs_pattern" "$logs_context"
+      emit_log_file "$logs_run_dir/stdout.log" stdout "$logs_tail" "$logs_bytes" "$logs_pattern" "$logs_context"
+      ;;
+  esac
+}
+
 argument_mode=0
 doctor_mode=0
 doctor_verbose=0
+output_mode=stream
+newline='
+'
 case ${1-} in
   -h|--help)
     usage
@@ -84,6 +294,27 @@ case ${1-} in
       fail 'doctor accepts only the optional --verbose flag'
     }
     ;;
+  logs)
+    shift
+    show_logs "$@"
+    exit 0
+    ;;
+  summary|--summary|--output=summary)
+    output_mode=summary
+    shift
+    if [ "${1-}" = -- ]; then
+      argument_mode=1
+      shift
+    fi
+    ;;
+  stream|--stream|--output=stream)
+    output_mode=stream
+    shift
+    if [ "${1-}" = -- ]; then
+      argument_mode=1
+      shift
+    fi
+    ;;
   --)
     argument_mode=1
     shift
@@ -102,6 +333,7 @@ saved_shell_set=0
 saved_session_set=0
 saved_mutagen_bin_set=0
 saved_mutagen_host_set=0
+saved_log_dir_set=0
 
 if [ "${DEV_EXEC_HOST+x}" = x ]; then
   saved_host_set=1
@@ -127,14 +359,23 @@ if [ "${DEV_EXEC_MUTAGEN_HOST+x}" = x ]; then
   saved_mutagen_host_set=1
   saved_mutagen_host=$DEV_EXEC_MUTAGEN_HOST
 fi
+if [ "${DEV_EXEC_LOG_DIR+x}" = x ]; then
+  saved_log_dir_set=1
+  saved_log_dir=$DEV_EXEC_LOG_DIR
+fi
 
 config_file=$(find_config) || config_file=
 if [ -n "$config_file" ]; then
   # The project config is trusted shell syntax; see references/configuration.md.
   # shellcheck disable=SC1090
-  if [ "$doctor_mode" -eq 1 ] && [ "$doctor_verbose" -eq 0 ]; then
+  if { [ "$doctor_mode" -eq 1 ] && [ "$doctor_verbose" -eq 0 ]; } ||
+    [ "$output_mode" = summary ]; then
     if ! sh -n "$config_file" >/dev/null 2>&1; then
-      doctor_fail 'configuration: invalid'
+      if [ "$doctor_mode" -eq 1 ]; then
+        doctor_fail 'configuration: invalid'
+      else
+        printf '%s\n' 'dev-exec: configuration is invalid; command not started' >&2
+      fi
       exit 64
     fi
     . "$config_file" >/dev/null 2>&1
@@ -145,6 +386,8 @@ if [ -n "$config_file" ]; then
   if [ "$config_status" -ne 0 ]; then
     if [ "$doctor_mode" -eq 1 ] && [ "$doctor_verbose" -eq 0 ]; then
       doctor_fail 'configuration: invalid'
+    elif [ "$output_mode" = summary ]; then
+      printf '%s\n' 'dev-exec: configuration failed to load; command not started' >&2
     else
       printf 'dev-exec: failed to load %s\n' "$config_file" >&2
     fi
@@ -170,10 +413,13 @@ fi
 if [ "$saved_mutagen_host_set" -eq 1 ] && [ -n "$saved_mutagen_host" ]; then
   DEV_EXEC_MUTAGEN_HOST=$saved_mutagen_host
 fi
+if [ "$saved_log_dir_set" -eq 1 ]; then
+  DEV_EXEC_LOG_DIR=$saved_log_dir
+else
+  unset DEV_EXEC_LOG_DIR
+fi
 
 mutagen_health_template='{{- range . -}}{{- if .Paused -}}paused{{- else if not .Alpha.Connected -}}disconnected{{- else if not .Beta.Connected -}}disconnected{{- else if .LastError -}}error{{- else if .Conflicts -}}conflicts{{- else if .Alpha.ScanProblems -}}problems{{- else if .Alpha.TransitionProblems -}}problems{{- else if .Beta.ScanProblems -}}problems{{- else if .Beta.TransitionProblems -}}problems{{- else -}}ok{{- end -}}{{- end -}}'
-newline='
-'
 
 [ -n "${DEV_EXEC_HOST:-}" ] ||
   fail 'DEV_EXEC_HOST is required in .dev-exec.env or the process environment'
@@ -379,7 +625,59 @@ if [ "$doctor_mode" -eq 1 ]; then
   exit "$execution_status"
 fi
 
+if [ "$output_mode" = stream ]; then
+  ssh -T -o BatchMode=yes -o ClearAllForwardings=yes -o ForwardAgent=no \
+    -o ForwardX11=no -o RequestTTY=no -o StrictHostKeyChecking=yes \
+    "$DEV_EXEC_HOST" "$remote_invocation"
+  exit $?
+fi
+
+prepare_log_dir
+umask 077
+run_dir=$(mktemp -d "$resolved_log_dir/run.XXXXXXXX") ||
+  fail 'cannot create a dev-exec run log directory'
+[ ! -L "$run_dir" ] || fail 'refusing to use a symlinked dev-exec run directory'
+run_id=${run_dir##*/}
+stdout_log=$run_dir/stdout.log
+stderr_log=$run_dir/stderr.log
+: > "$stdout_log" || fail 'cannot create the dev-exec stdout log'
+: > "$stderr_log" || fail 'cannot create the dev-exec stderr log'
+
+execution_status=0
 ssh -T -o BatchMode=yes -o ClearAllForwardings=yes -o ForwardAgent=no \
   -o ForwardX11=no -o RequestTTY=no -o StrictHostKeyChecking=yes \
-  "$DEV_EXEC_HOST" "$remote_invocation"
-exit $?
+  "$DEV_EXEC_HOST" "$remote_invocation" > "$stdout_log" 2> "$stderr_log" ||
+  execution_status=$?
+
+stdout_bytes=$(file_bytes "$stdout_log")
+stderr_bytes=$(file_bytes "$stderr_log")
+stdout_lines=$(file_lines "$stdout_log")
+stderr_lines=$(file_lines "$stderr_log")
+if [ "$execution_status" -eq 0 ]; then
+  result_status=succeeded
+else
+  result_status=failed
+fi
+{
+  printf 'run_id: %s\n' "$run_id"
+  printf 'status: %s\n' "$result_status"
+  printf 'exit_status: %s\n' "$execution_status"
+  printf 'stdout_bytes: %s\n' "$stdout_bytes"
+  printf 'stderr_bytes: %s\n' "$stderr_bytes"
+  printf 'stdout_lines: %s\n' "$stdout_lines"
+  printf 'stderr_lines: %s\n' "$stderr_lines"
+} > "$run_dir/meta" || fail 'cannot write dev-exec run metadata'
+
+printf 'dev-exec result: run=%s status=%s exit=%s stdout=%sB stderr=%sB\n' \
+  "$run_id" "$result_status" "$execution_status" "$stdout_bytes" "$stderr_bytes"
+printf 'dev-exec logs: use `dev-exec logs %s` for bounded follow-up inspection\n' "$run_id"
+
+if [ "$execution_status" -eq 0 ]; then
+  emit_excerpt_stdout "$stdout_log" stdout 20 2048
+  emit_excerpt_stderr "$stderr_log" stderr 20 2048
+else
+  emit_excerpt_stderr "$stderr_log" stderr 80 8192
+  emit_excerpt_stdout "$stdout_log" stdout 40 4096
+fi
+
+exit "$execution_status"

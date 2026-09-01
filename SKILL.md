@@ -31,7 +31,7 @@ When the active agent runs in a VM, install this Skill in that VM's user-level d
 - When rerunning relay setup for a generated project config, omit `--mutagen` to preserve existing Mutagen assignments. Use `--clear-mutagen` only after explicitly confirming a shared checkout or another verified freshness mechanism.
 - Use `dev-relay install-skill --client CLIENT` to repair an existing relay whose Agent environment has the wrapper but not the Skill, then restart the Agent session.
 - Run `dev-relay status` on the Mac before diagnosing `dev-exec` through a relay.
-- Use `dev-exec` for non-interactive commands with separate stdout and stderr.
+- Use `dev-exec summary` for ordinary non-interactive commands. It preserves complete stdout and stderr in private caller-side logs while returning bounded excerpts and the original SSH status.
 - Run `dev-exec doctor` after first-time configuration or whenever execution provenance is uncertain. Its default output is redacted; use `--verbose` only when the user accepts infrastructure details in diagnostic output.
 - Use direct `ssh -t` through the relay alias for an interactive shell or terminal debugger.
 - Forward debug protocol ports only when the user explicitly configures them, and bind both ends to loopback.
@@ -57,13 +57,13 @@ When the active agent runs in a VM, install this Skill in that VM's user-level d
 6. Execute the selected command from the project workspace with the bundled wrapper:
 
    ```sh
-   /path/to/remote-dev-execution/scripts/dev-exec -- npm test
+   /path/to/remote-dev-execution/scripts/dev-exec summary -- npm test
    ```
 
 7. Use one quoted argument without `--` when the remote shell must interpret operators, pipelines, expansions, or redirections:
 
    ```sh
-   /path/to/remote-dev-execution/scripts/dev-exec 'npm test -- --runInBand > /tmp/dev-exec-npm-test.log 2>&1'
+   /path/to/remote-dev-execution/scripts/dev-exec summary 'npm test -- --runInBand'
    ```
 
 8. Diagnose failures using the exit status and the smallest relevant output excerpt. Edit source in the AI editing environment, then rerun the narrowest relevant authoritative command.
@@ -72,14 +72,12 @@ Do not hard-code a language, framework, build system, or test command in advance
 
 ## Bound Command Output
 
-- Prefer tool-native quiet, summary, filtering, and result-limit options. Reduce the command's scope before truncating its display.
-- Do not dump complete build logs, test logs, dependency listings, generated files, or other potentially large output into the conversation when a targeted inspection is sufficient.
-- For a potentially verbose command, keep the complete output in a task-specific temporary log when later inspection may be needed, while returning only a bounded excerpt. Preserve the original command's exit status; do not use a truncating pipeline that can mask failure or terminate the producer early.
-- On success, report the command, exit status, and a concise result summary. Omit routine output.
-- On failure, inspect the final relevant section first, then search the saved log for errors, failed tests, stack traces, and nearby context. Expand the inspected range only when the current evidence is insufficient.
-- As a default budget, display no more than 200 lines from one command and no more than 80 new lines from an incremental poll. Exceed these limits only when the additional text is necessary to diagnose the current failure.
-- Poll long-running commands incrementally and do not repeat unchanged output. Before reading a possibly large log or file, check its size or line count and select the smallest useful range.
-- Apply the existing infrastructure-redaction rules to logs and excerpts. Never display credentials, tokens, secrets, or sensitive environment values.
+- Prefer focused commands and tool-native quiet, summary, filtering, and result-limit options, then use `dev-exec summary` as the deterministic context boundary.
+- Accept a successful summary without expanding routine output. On failure, use the reported run ID with `dev-exec logs RUN_ID --stderr --match 'ERROR|FAIL' --context 3` or another narrow query.
+- Each `logs` query is line- and byte-bounded. Read at most three non-overlapping excerpts for one failure before narrowing the command or search pattern instead of widening the dump.
+- Use `dev-exec stream` only for an interactive debugger, a deliberately observed service, or when the user explicitly requests unbounded live output. Never use stream mode for an ordinary build or test.
+- Do not use `cat`, unbounded `tee`, or a producer pipeline to truncate logs. Summary mode captures the complete streams before excerpting, so it does not mask the command status or terminate the producer early.
+- Apply the existing infrastructure-redaction rules to displayed excerpts. Never display credentials, tokens, secrets, or sensitive environment values. Full logs may also contain sensitive output; inspect them only through the narrowest necessary query.
 
 ## Preserve the Environment Boundary
 
@@ -95,7 +93,7 @@ Do not hard-code a language, framework, build system, or test command in advance
 
 ## Interpret Results
 
-The wrapper writes remote stdout and stderr directly to the caller and returns SSH's exit status, which reflects the remote command status when the connection succeeds. Mutagen flush and health failures prevent remote execution.
+Summary mode stores complete remote stdout and stderr separately on the caller, returns bounded excerpts plus an opaque run ID, and exits with SSH's status, which reflects the remote command status when the connection succeeds. Stream mode writes both streams directly to the caller. Mutagen flush and health failures prevent remote execution in either mode.
 
 Distinguish code failures from environment failures:
 

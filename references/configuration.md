@@ -120,19 +120,23 @@ Treat the file as executable configuration:
 
 ## Command Semantics
 
-Use `--` and pass arguments for a normal command. The wrapper quotes every argument before the selected remote shell evaluates it, including when there is only one:
+Use `summary --` and pass arguments for an ordinary non-interactive command. The wrapper quotes every argument before the selected remote shell evaluates it, including when there is only one:
 
 ```sh
-dev-exec -- npm test -- --runInBand
+dev-exec summary -- npm test -- --runInBand
 ```
 
 Pass one quoted string when shell syntax must be interpreted remotely:
 
 ```sh
-dev-exec 'npm test | tee /tmp/test.log'
+dev-exec summary 'npm test -- --runInBand'
 ```
 
-The remote command starts in `DEV_EXEC_DIR`. Remote stdout and stderr are not captured or rewritten, and the SSH process status is returned to the caller. The wrapper requires batch authentication and strict host-key checking; trust the alias with ordinary SSH before invoking it.
+The remote command starts in `DEV_EXEC_DIR`. Summary mode captures complete stdout and stderr separately in a private caller-side state directory, returns bounded excerpts and an opaque run ID, and preserves the SSH process status. Inspect retained output with `dev-exec logs RUN_ID`; add `--stdout` or `--stderr`, `--tail LINES`, `--max-bytes BYTES`, or `--match ERE --context LINES` to narrow the read. A query cannot exceed 200 lines, 16 KiB per selected stream, or 20 context lines.
+
+Use `dev-exec stream -- COMMAND` only when unbounded live output is intentionally required. The legacy `dev-exec -- COMMAND` form remains a streaming alias for compatibility. Override the private state directory only through the process environment with `DEV_EXEC_LOG_DIR=/absolute/path`; do not store this caller-side path in `.dev-exec.env`.
+
+The wrapper requires batch authentication and strict host-key checking; trust the alias with ordinary SSH before invoking it.
 
 ## Doctor and Trust Boundary
 
