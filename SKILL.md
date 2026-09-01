@@ -63,12 +63,23 @@ When the active agent runs in a VM, install this Skill in that VM's user-level d
 7. Use one quoted argument without `--` when the remote shell must interpret operators, pipelines, expansions, or redirections:
 
    ```sh
-   /path/to/remote-dev-execution/scripts/dev-exec 'npm test -- --runInBand | tee /tmp/test.log'
+   /path/to/remote-dev-execution/scripts/dev-exec 'npm test -- --runInBand > /tmp/dev-exec-npm-test.log 2>&1'
    ```
 
-8. Diagnose failures using the returned output and exit status. Edit source in the AI editing environment, then rerun the narrowest relevant authoritative command.
+8. Diagnose failures using the exit status and the smallest relevant output excerpt. Edit source in the AI editing environment, then rerun the narrowest relevant authoritative command.
 
 Do not hard-code a language, framework, build system, or test command in advance. Derive the command from the repository and the failure under investigation.
+
+## Bound Command Output
+
+- Prefer tool-native quiet, summary, filtering, and result-limit options. Reduce the command's scope before truncating its display.
+- Do not dump complete build logs, test logs, dependency listings, generated files, or other potentially large output into the conversation when a targeted inspection is sufficient.
+- For a potentially verbose command, keep the complete output in a task-specific temporary log when later inspection may be needed, while returning only a bounded excerpt. Preserve the original command's exit status; do not use a truncating pipeline that can mask failure or terminate the producer early.
+- On success, report the command, exit status, and a concise result summary. Omit routine output.
+- On failure, inspect the final relevant section first, then search the saved log for errors, failed tests, stack traces, and nearby context. Expand the inspected range only when the current evidence is insufficient.
+- As a default budget, display no more than 200 lines from one command and no more than 80 new lines from an incremental poll. Exceed these limits only when the additional text is necessary to diagnose the current failure.
+- Poll long-running commands incrementally and do not repeat unchanged output. Before reading a possibly large log or file, check its size or line count and select the smallest useful range.
+- Apply the existing infrastructure-redaction rules to logs and excerpts. Never display credentials, tokens, secrets, or sensitive environment values.
 
 ## Preserve the Environment Boundary
 
