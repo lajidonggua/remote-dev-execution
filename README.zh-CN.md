@@ -22,7 +22,31 @@ Skill 的核心原则是：轻量的源码检查和编辑留在 AI 所在环境�
 
 英文文档：[README.md](README.md)
 
-## 最短路径：Relay 一键部署，独立 checkout 再配置同步
+## 从这里开始
+
+先根据实际拓扑选择一条路径：
+
+| 你的场景 | 按顺序阅读和执行 |
+| --- | --- |
+| Agent 环境可以直接 SSH 到权威开发机，双方使用同一个 checkout | [安装 Skill](#安装-skill) → [配置项目](#配置项目) → [直接 SSH 完整教程](#直接-ssh完整教程) |
+| Agent 环境可以直接 SSH 到权威开发机，但双方各有一个 checkout | 先走上面的直接 SSH 路径，再完成 [Mutagen](#mutagen可选但源码新鲜度不可省略) |
+| 权威环境是非管理员 Mac，VM 无法主动连入 | [Relay 最短路径](#relay-最短路径一键部署并按需配置同步) |
+
+无论选择哪条路径，只有同时满足以下条件才算配置成功：
+
+1. 在 Agent 侧项目目录中执行命令，确保 `dev-exec` 找到预期的
+   `.dev-exec.env`。
+2. `dev-exec doctor` 显示 `authoritative execution: ready`。
+3. 源码新鲜度已确认：双方共享 checkout、配置好的 Mutagen 前置检查通过，
+   或其他同步工具已经给出可阻塞的成功信号。
+4. `dev-exec summary -- YOUR_TEST_COMMAND` 返回权威命令的退出状态。把
+   `YOUR_TEST_COMMAND` 替换为业务项目 README、manifest 或 CI 中真实存在的
+   测试命令。
+
+doctor 失败，或者显示 `source freshness: not verified` 且尚未独立确认共享
+checkout / 外部同步完成时，不要继续运行项目测试。
+
+## Relay 最短路径：一键部署，并按需配置同步
 
 对于“非管理员 Mac + Claude Code 运行在 VM”的场景，`dev-relay setup`
 可以一次完成 relay、VM 命令 wrapper、Claude Skill 安装和项目本地配置。
@@ -33,7 +57,14 @@ Skill 的核心原则是：轻量的源码检查和编辑留在 AI 所在环境�
 2. 已经明确两个项目 checkout 的路径。两个 checkout 分离时，必须先完成
    下文的 Mutagen 步骤，再运行任何项目测试。
 
-然后在 Mac 的 canonical checkout 中执行：
+如果 Mac 上还没有本仓库，先克隆：
+
+```sh
+git clone https://github.com/lajidonggua/remote-dev-execution.git \
+  ~/code/remote-dev-execution
+```
+
+然后在 Mac 的这个 canonical checkout 中执行：
 
 ```sh
 ~/code/remote-dev-execution/scripts/dev-relay setup VM_ALIAS \
@@ -178,13 +209,13 @@ Mutagen 是同步工具，不是 SSH 替代品。两个 checkout 分离时，本
 - SSH 客户端，以及指向权威环境的可用 SSH alias。
 - 项目目录中有 `.dev-exec.env`，或者进程环境中已经导出必需的
   `DEV_EXEC_*` 变量。
+- 两个 checkout 分离并采用推荐同步方式时，需要 Mutagen；内置安装器不需要
+  管理员权限。
 
 ### 权威开发环境
 
 - 真实项目 checkout、工具链、依赖、服务、Docker、SDK 和运行时。
 - 可以通过 SSH alias 访问的 SSH server；使用反向 relay 时例外。
-- 两个 checkout 分离并采用推荐同步方式时，Mutagen 必须安装在
-  `dev-exec` 所在环境；内置安装器不需要管理员权限。
 
 ### 反向 relay 额外条件
 
@@ -367,20 +398,30 @@ chmod 600 .dev-exec.env
 
 ```sh
 ~/code/remote-dev-execution/scripts/dev-exec doctor
-~/code/remote-dev-execution/scripts/dev-exec -- npm test -- --runInBand
+~/code/remote-dev-execution/scripts/dev-exec summary -- npm test -- --runInBand
 ```
 
 doctor 报告执行失败或源码新鲜度尚未确认时，不要运行测试。
 
-需要管道、重定向或 shell 展开的命令，使用一个带引号的字符串：
+需要 shell 展开的命令，使用一个带引号的字符串：
 
 ```sh
-~/code/remote-dev-execution/scripts/dev-exec \
-  'npm test -- --runInBand | tee /tmp/project-test.log'
+~/code/remote-dev-execution/scripts/dev-exec summary \
+  'npm test -- --runInBand'
 ```
 
-wrapper 会先进入 `DEV_EXEC_DIR`，再执行 `DEV_EXEC_SHELL -lc`。远程 stdout 和
-stderr 原样返回，SSH 成功连接后返回远程命令的退出码。
+summary 模式会先进入 `DEV_EXEC_DIR`，再执行 `DEV_EXEC_SHELL -lc`，将完整
+stdout/stderr 分别保存在调用方的私有日志中，只返回受限摘录、run ID 和 SSH
+状态。排错时原样复制 summary 输出的 `RUN_ID`：
+
+```sh
+~/code/remote-dev-execution/scripts/dev-exec logs RUN_ID \
+  --stderr --match 'ERROR|FAIL' --context 3
+```
+
+完整日志保存在 Agent 环境的私有目录中，不在权威开发机上。只有明确需要
+无界实时输出时才使用 `dev-exec stream -- COMMAND`；旧的
+`dev-exec -- COMMAND` 仍作为兼容的流式形式保留。
 
 ## Mutagen：可选，但源码新鲜度不可省略
 
@@ -642,7 +683,7 @@ chmod 600 .dev-exec.env
 
 ssh dev-machine true
 ~/code/remote-dev-execution/scripts/dev-exec doctor
-~/code/remote-dev-execution/scripts/dev-exec -- npm test
+~/code/remote-dev-execution/scripts/dev-exec summary -- npm test
 ```
 
 双方使用同一个 checkout，所以不需要 Mutagen。
@@ -663,7 +704,7 @@ chmod 600 .dev-exec.env
   --ignore PROJECT_GENERATED_DIRECTORY
 
 ~/code/remote-dev-execution/scripts/dev-exec doctor
-~/code/remote-dev-execution/scripts/dev-exec -- npm test
+~/code/remote-dev-execution/scripts/dev-exec summary -- npm test
 ```
 
 没有额外 ignore 时删除 `--ignore PROJECT_GENERATED_DIRECTORY`。wrapper 每次
@@ -685,7 +726,7 @@ ssh dev-vm true
   --install \
   --name project-sync
 ~/.local/share/remote-dev-execution/dev-exec doctor
-~/.local/share/remote-dev-execution/dev-exec -- npm test
+~/.local/share/remote-dev-execution/dev-exec summary -- npm test
 ```
 
 ### Demo D：复用由其他环境控制的 Mutagen session
@@ -721,6 +762,8 @@ session。relay setup 时同时填写现有 session 名称和控制 alias：
 | Mutagen session unavailable | 在 session 所属控制环境中用 `mutagen sync list -- SESSION` 核对 `DEV_EXEC_MUTAGEN_SESSION`，不要换成未审核的 session。 |
 | Mutagen health 报告端点断开、冲突或文件系统问题 | 用户运行 `mutagen sync list --long -- SESSION`，恢复 session、处理相关文件后重跑 doctor，不要绕过健康检查。 |
 | doctor 显示 `source freshness: not verified` | 先确认共享 checkout 或完成外部同步；仅连通不能证明测试使用了当前源码。 |
+| summary 摘录不足以定位失败 | 复制输出的 run ID，执行 `dev-exec logs RUN_ID --stderr --match 'ERROR|FAIL' --context 3`。只有定向查询仍不足时才增加 `--tail` 或 `--max-bytes`。 |
+| `dev-exec run ID not found` | 在执行 `summary` 的同一个 Agent 环境、同一个用户下运行 `logs`；日志保存在调用方，不在远端。 |
 | setup 发现未托管的 `.dev-exec.env` | 保留文件并去掉 `--project` 重跑；或者审核后把它移为备份，再让 setup 生成。脚本不会自动覆盖。 |
 | Agent 找不到 Skill | 用匹配的 `--client` 运行 `dev-relay install-skill`，然后重启 Agent。 |
 | relay 已停止 | Mac 上运行 `dev-relay status`，然后 `stop` 再 `start`。 |

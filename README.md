@@ -24,7 +24,33 @@ VM cannot connect inbound to the Mac.
 
 **中文文档:** [README.zh-CN.md](README.zh-CN.md)
 
-## Quick Start: Relay Setup and Optional Sync Setup
+## Start Here
+
+Choose one path before running setup:
+
+| Your situation | Follow these sections in order |
+| --- | --- |
+| The Agent environment can SSH directly to the authoritative machine and both use one checkout | [Install the Skill](#install-the-skill) → [Configure a Project](#configure-a-project) → [Direct SSH: Complete Demo](#direct-ssh-complete-demo) |
+| The Agent environment can SSH directly to the authoritative machine, but each side has its own checkout | The direct SSH path above → [Mutagen](#mutagen-optional-but-source-freshness-is-mandatory) |
+| The authoritative machine is a non-admin Mac that the VM cannot reach inbound | [Relay Quick Start](#relay-quick-start-and-optional-sync-setup) |
+
+Whichever path you choose, setup is complete only when all of these are true:
+
+1. Run commands from the Agent-side project so `dev-exec` finds the intended
+   `.dev-exec.env`.
+2. `dev-exec doctor` reports `authoritative execution: ready`.
+3. Source freshness is known: the checkout is shared, a configured Mutagen
+   preflight passes, or another synchronization tool has completed with a
+   blocking success signal.
+4. `dev-exec summary -- YOUR_TEST_COMMAND` returns the authoritative command's
+   exit status. Replace `YOUR_TEST_COMMAND` with a real command from the
+   project's own README, manifest, or CI configuration.
+
+Do not continue to project tests when doctor fails or reports
+`source freshness: not verified` and you have not independently confirmed a
+shared checkout or completed external synchronization.
+
+## Relay Quick Start and Optional Sync Setup
 
 For a non-admin Mac plus a VM-hosted Claude Code session, `dev-relay setup`
 can provision the relay, install the VM command wrapper, install this Skill for
@@ -36,7 +62,14 @@ Confirm these two prerequisites first:
 2. Both project checkout paths are known. For separate checkouts, complete the
    Mutagen step below before running any project test.
 
-Then run on the Mac from this canonical checkout:
+If this repository is not already present on the Mac, clone it first:
+
+```sh
+git clone https://github.com/lajidonggua/remote-dev-execution.git \
+  ~/code/remote-dev-execution
+```
+
+Then run on the Mac from that canonical checkout:
 
 ```sh
 ~/code/remote-dev-execution/scripts/dev-relay setup VM_ALIAS \
@@ -150,8 +183,8 @@ privacy-safe prompt and observable acceptance criteria.
 
 - `SKILL.md`: instructions loaded by Codex or Claude when the Skill is active.
 - `scripts/dev-exec`: project-aware command wrapper with a redacted doctor,
-  config lookup, Mutagen flush and health checks, SSH execution, and
-  exit-status preservation.
+  config lookup, Mutagen flush and health checks, bounded summary logs, SSH
+  execution, and exit-status preservation.
 - `scripts/dev-relay`: user-owned macOS `sshd` plus a Mac-initiated reverse
   SSH tunnel. It does not require administrator privileges.
 - `scripts/install-skill.sh`: safe canonical-checkout and user-level-link
@@ -198,6 +231,8 @@ conflict.
 - An SSH client and a working SSH alias for the authoritative environment.
 - A project checkout containing a local `.dev-exec.env`, or the required
   `DEV_EXEC_*` values exported in the process environment.
+- Mutagen when separate checkouts use the recommended synchronization path.
+  The bundled installer needs no administrator access.
 
 ### On the authoritative environment
 
@@ -205,9 +240,6 @@ conflict.
   SDKs, and runtime.
 - An SSH server reachable through the configured alias, unless the reverse
   relay is used.
-- Mutagen in the environment where `dev-exec` runs when separate checkouts use
-  the recommended synchronization path. The bundled installer needs no
-  administrator access.
 
 ### Additional reverse-relay requirements
 
@@ -405,22 +437,33 @@ the VM. It must be absolute.
 
 ```sh
 ~/code/remote-dev-execution/scripts/dev-exec doctor
-~/code/remote-dev-execution/scripts/dev-exec -- npm test -- --runInBand
+~/code/remote-dev-execution/scripts/dev-exec summary -- npm test -- --runInBand
 ```
 
 Do not run the test when doctor reports failed execution or when source
 freshness has not been confirmed.
 
-For pipelines or shell operators, pass one quoted command string:
+For shell operators, pass one quoted command string:
 
 ```sh
-~/code/remote-dev-execution/scripts/dev-exec \
-  'npm test -- --runInBand | tee /tmp/project-test.log'
+~/code/remote-dev-execution/scripts/dev-exec summary \
+  'npm test -- --runInBand'
 ```
 
-The wrapper changes to `DEV_EXEC_DIR`, starts `DEV_EXEC_SHELL -lc`, writes
-remote stdout/stderr directly to the caller, and returns the remote command's
-exit status.
+Summary mode changes to `DEV_EXEC_DIR`, starts `DEV_EXEC_SHELL -lc`, retains
+complete stdout/stderr separately in private caller-side logs, returns bounded
+excerpts and a run ID, and preserves the SSH status. Use
+`RUN_ID` exactly as printed by the summary when inspecting a failure:
+
+```sh
+~/code/remote-dev-execution/scripts/dev-exec logs RUN_ID \
+  --stderr --match 'ERROR|FAIL' --context 3
+```
+
+The retained logs are private files in the Agent environment, not on the
+authoritative machine. Use `dev-exec stream -- COMMAND` only when unbounded
+live output is intentional; the legacy `dev-exec -- COMMAND` form remains a
+streaming alias.
 
 ## Mutagen: Optional, but Source Freshness Is Mandatory
 
@@ -705,7 +748,7 @@ chmod 600 .dev-exec.env
 
 ssh dev-machine true
 ~/code/remote-dev-execution/scripts/dev-exec doctor
-~/code/remote-dev-execution/scripts/dev-exec -- npm test
+~/code/remote-dev-execution/scripts/dev-exec summary -- npm test
 ```
 
 No Mutagen session is needed because both sides use the same checkout.
@@ -726,7 +769,7 @@ chmod 600 .dev-exec.env
   --ignore PROJECT_GENERATED_DIRECTORY
 
 ~/code/remote-dev-execution/scripts/dev-exec doctor
-~/code/remote-dev-execution/scripts/dev-exec -- npm test
+~/code/remote-dev-execution/scripts/dev-exec summary -- npm test
 ```
 
 Remove `--ignore PROJECT_GENERATED_DIRECTORY` when no additional ignore is
@@ -748,7 +791,7 @@ ssh dev-vm true
   --install \
   --name project-sync
 ~/.local/share/remote-dev-execution/dev-exec doctor
-~/.local/share/remote-dev-execution/dev-exec -- npm test
+~/.local/share/remote-dev-execution/dev-exec summary -- npm test
 ```
 
 ### Demo D: reuse a Mutagen session controlled elsewhere
@@ -788,6 +831,8 @@ problems or conflicts.
 | Mutagen session is unavailable | Confirm `DEV_EXEC_MUTAGEN_SESSION` with `mutagen sync list -- SESSION` in its control environment; do not select an unrelated session. |
 | Mutagen health reports a disconnected endpoint, conflicts, or filesystem problems | Inspect `mutagen sync list --long -- SESSION`, restore the session, reconcile affected files, and rerun doctor. Do not bypass the health gate. |
 | Doctor reports `source freshness: not verified` | Confirm a shared checkout or complete the external sync before testing; connectivity alone is insufficient. |
+| A summary is insufficient to diagnose a failure | Copy the printed run ID and use `dev-exec logs RUN_ID --stderr --match 'ERROR|FAIL' --context 3`. Increase `--tail` or `--max-bytes` only when the focused query is insufficient. |
+| `dev-exec run ID not found` | Run `logs` in the same Agent environment and user account that ran `summary`; retained logs are caller-side, not remote. |
 | Setup finds an unmanaged `.dev-exec.env` | Keep it and rerun without `--project`, or move it to a backup after review and rerun setup. It is never overwritten automatically. |
 | The Agent cannot find this Skill | Run `dev-relay install-skill` with the matching `--client`, then restart the Agent. |
 | Relay is stopped | On the Mac run `dev-relay status`, then `stop` and `start`. |
