@@ -459,6 +459,101 @@ fi
 [ "$status" -eq 64 ]
 grep -Fqx 'dev-exec doctor: configuration: invalid or unsafe' "$doctor_error"
 
+# --- configuration ownership and mode, the checks the stat probe feeds -------
+#
+# The portable stat regression showed up here: when the probe returned a
+# corrupted owner, a perfectly safe 0600 file was rejected as "invalid or
+# unsafe". These cases pin both directions -- a good file passes, a bad one
+# still fails -- so a future probe change cannot quietly break either.
+#
+# The shared fake stat above always answers 600 and the current uid, which would
+# mask a real chmod, so these cases use a shim that delegates to the system stat
+# while leaving the fake ssh in place.
+
+system_stat=$(PATH=/usr/bin:/bin command -v stat)
+real_stat_bin=$test_root/real-stat-bin
+mkdir -p "$real_stat_bin"
+cat > "$real_stat_bin/stat" <<EOF
+#!/bin/sh
+exec $system_stat "\$@"
+EOF
+chmod 0755 "$real_stat_bin/stat"
+
+mode_project=$test_root/mode-project
+mkdir -p "$mode_project"
+cat > "$mode_project/.dev-exec.env" <<'EOF'
+DEV_EXEC_HOST=test-host
+DEV_EXEC_DIR=/authoritative/project
+EOF
+
+assert_config_rejected() {
+  status=0
+  if PATH="$1:$fake_bin:$PATH" \
+      sh -c "cd '$mode_project' && '$wrapper' doctor" > "$doctor_output" 2> "$doctor_error"; then
+    status=0
+  else
+    status=$?
+  fi
+  [ "$status" -eq 64 ] || { echo "expected doctor to refuse: $2"; exit 1; }
+  grep -Fqx 'dev-exec doctor: configuration: invalid or unsafe' "$doctor_error" ||
+    { echo "expected the unsafe-configuration message: $2"; exit 1; }
+}
+
+assert_config_accepted() {
+  if PATH="$1:$fake_bin:$PATH" \
+      sh -c "cd '$mode_project' && '$wrapper' doctor" > "$doctor_output" 2> "$doctor_error"; then
+    :
+  fi
+  grep -Fqx 'dev-exec doctor: configuration: valid' "$doctor_output" ||
+    { echo "expected the configuration to be accepted: $2"; exit 1; }
+  ! grep -Fqx 'dev-exec doctor: configuration: invalid or unsafe' "$doctor_error" ||
+    { echo "configuration was rejected but should not have been: $2"; exit 1; }
+}
+
+chmod 0620 "$mode_project/.dev-exec.env"
+assert_config_rejected "$real_stat_bin" 'group-writable configuration'
+
+chmod 0602 "$mode_project/.dev-exec.env"
+assert_config_rejected "$real_stat_bin" 'world-writable configuration'
+
+chmod 0600 "$mode_project/.dev-exec.env"
+assert_config_accepted "$real_stat_bin" 'mode 0600'
+
+# A configuration owned by another user is refused. The uid cannot be changed
+# without privileges, so the owner probe is steered instead: a stat reporting a
+# different uid must make the check fail.
+owner_bin=$test_root/owner-bin
+mkdir -p "$owner_bin"
+cat > "$owner_bin/stat" <<'EOF'
+#!/bin/sh
+case $1:$2 in
+  -c:%u) printf '%s\n' 4294967200 ;;
+  -c:%a) printf '%s\n' 600 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod 0755 "$owner_bin/stat"
+assert_config_rejected "$owner_bin" 'configuration owned by another user'
+
+# The incident shape end to end: a stat whose BSD form writes multi-line output
+# before failing must not stop a valid 0600 file from being accepted.
+incident_bin=$test_root/incident-bin
+mkdir -p "$incident_bin"
+cat > "$incident_bin/stat" <<'EOF'
+#!/bin/sh
+case $1:$2 in
+  -f:%u|-f:%Lp)
+    printf '%s\n' '  File: "config"' '    ID: e33663a6567f5704 Namelen: 255' 'Block size: 4096'
+    exit 1
+    ;;
+  -c:%u) id -u ;;
+  -c:%a) printf '%s\n' 600 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod 0755 "$incident_bin/stat"
+assert_config_accepted "$incident_bin" 'failed BSD probe must not contaminate the owner'
+
 summary_authoritative=$test_root/summary-authoritative
 summary_project=$test_root/summary-project
 summary_logs=$test_root/summary-logs
