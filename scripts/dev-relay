@@ -7,7 +7,7 @@ EX_USAGE=64
 EX_CONFIG=78
 EX_UNAVAILABLE=69
 DEFAULT_SKILL_REPO=${REMOTE_DEV_EXECUTION_REPO:-https://github.com/lajidonggua/remote-dev-execution.git}
-DEFAULT_SKILL_REF=${REMOTE_DEV_EXECUTION_REF:-main}
+DEFAULT_SKILL_REF=${REMOTE_DEV_EXECUTION_REF:-}
 
 usage() {
   cat <<'EOF'
@@ -52,7 +52,8 @@ Setup values and options:
                        Optional for setup; defaults to claude for install-skill.
                        Restart the Agent after installation.
   --repo REPOSITORY    Skill Git repository installed in the VM.
-  --ref REF            Skill branch, tag, or commit (default: main).
+  --ref COMMIT         Full 40- or 64-hex Skill commit ID (required with
+                       --client and for install-skill).
 
 Use --mutagen only for an existing session. Omit it for a shared checkout or
 when another synchronization preflight completes before every validation.
@@ -820,6 +821,13 @@ validate_skill_request() {
   esac
   case $skill_ref in
     ''|-*) fail "$EX_USAGE" 'SKILL_REF must be non-empty and must not begin with a hyphen' ;;
+  esac
+  case $skill_ref in
+    *[!A-Fa-f0-9]*) fail "$EX_USAGE" 'SKILL_REF must be a full 40- or 64-hex commit ID' ;;
+  esac
+  case ${#skill_ref} in
+    40|64) ;;
+    *) fail "$EX_USAGE" 'SKILL_REF must be a full 40- or 64-hex commit ID' ;;
   esac
 }
 

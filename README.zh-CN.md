@@ -69,6 +69,7 @@ git clone https://github.com/lajidonggua/remote-dev-execution.git \
 ```sh
 ~/code/remote-dev-execution/scripts/dev-relay setup VM_ALIAS \
   --client claude \
+  --ref FULL_COMMIT_SHA \
   --project /absolute/path/to/project/in/agent-environment \
             /absolute/path/to/project/in/authoritative-environment \
   --shell /bin/zsh
@@ -82,6 +83,7 @@ git clone https://github.com/lajidonggua/remote-dev-execution.git \
 | `--project` 第一个值 | 使用 `--project` 时必需 | Agent 环境中的项目 checkout 绝对路径，目录必须已经存在。 |
 | `--project` 第二个值 | 使用 `--project` 时必需 | 权威环境中的项目 checkout 绝对路径，构建、测试、服务和调试会在这里运行。 |
 | `--client CLIENT` | 可选，首次 setup 推荐填写 | 只能填写 `claude`、`codex` 或 `both`，用于在 Agent 环境安装对应 Skill。安装后重启 Agent。 |
+| `--ref COMMIT` | 使用 `--client` 时必需 | 要安装的、经过审核的完整 40 或 64 位十六进制 commit ID。分支名和 tag 会移动，因此不接受。 |
 | `--shell SHELL` | 可选 | 权威环境中实际存在的 shell，通常是 `/bin/zsh` 或 `/bin/sh`。省略时优先使用当前用户 shell，否则 `dev-exec` 默认使用 `/bin/sh`。 |
 | `--mutagen SESSION` | 可选 | 已存在的 Mutagen session 名称。默认由 `dev-exec` 所在环境控制；如果 daemon/session 在其他获准环境中，和 `--mutagen-host` 一起填写。必须和 `--project` 一起使用。 |
 | `--mutagen-host HOST` | 可选 | Agent 环境可以非交互连接的 SSH alias，指向实际拥有该 Mutagen daemon/session 的环境。必须和 `--project`、`--mutagen` 一起使用。 |
@@ -131,9 +133,9 @@ checkout 没有可靠同步时不得运行测试。
 | Skill 已安装，只更新当前项目映射 | 省略 | 仅当该项目使用 Mutagen 时填写 |
 | Agent 环境同时运行 Claude 和 Codex | `both` | 根据 checkout 同步方式决定 |
 
-团队内部仓库或固定 release 可以增加 `--repo REPOSITORY` 和
-`--ref BRANCH_OR_TAG_OR_COMMIT`。在 `setup` 中使用这两个参数时必须同时提供
-`--client`，并确保指定 ref 已经包含需要安装的版本。
+使用 `--client` 时必须增加 `--ref FULL_COMMIT_SHA`；团队内部仓库再增加
+`--repo REPOSITORY`。固定 release tag 需要先解析成完整 commit ID，并确保该
+commit 已经包含需要安装的版本。
 
 两条项目路径和源码新鲜度策略是仅有的项目级必选项。setup 不会猜测它们，
 因为猜错会让测试看似成功，实际却使用旧源码或无关 checkout。
@@ -159,7 +161,8 @@ Use $remote-dev-execution to validate delegated execution and run the smallest r
 然后重启 Agent：
 
 ```sh
-~/code/remote-dev-execution/scripts/dev-relay install-skill --client claude
+~/code/remote-dev-execution/scripts/dev-relay install-skill \
+  --client claude --ref FULL_COMMIT_SHA
 ```
 
 完整英文提示词和可观察验收标准见
@@ -242,14 +245,15 @@ git clone https://github.com/lajidonggua/remote-dev-execution.git \
 
 ~/code/remote-dev-execution/scripts/install-skill.sh \
   --repo https://github.com/lajidonggua/remote-dev-execution.git \
-  --ref main \
+  --ref FULL_COMMIT_SHA \
   --client claude
 ```
 
 如果同一个用户环境同时运行 Claude 和 Codex：
 
 ```sh
-~/code/remote-dev-execution/scripts/install-skill.sh --client both
+~/code/remote-dev-execution/scripts/install-skill.sh \
+  --ref FULL_COMMIT_SHA --client both
 ```
 
 默认目标分别是 Claude Code 的 `~/.claude/skills/remote-dev-execution` 和
@@ -259,10 +263,10 @@ canonical checkout。
 安装器的行为是保守且可重复的：
 
 - 只更新 `origin` 与 `--repo` 匹配且没有本地修改的 checkout。
-- `--ref` 可以指定分支、tag 或 commit。
+- `--ref` 必须是完整的 40 或 64 位十六进制 commit ID。
 - 发现已有真实目录、断开的软链接或指向其他位置的链接时直接停止。
 - 不使用 `sudo`，不覆盖无关的用户文件。
-- `--no-update` 使用当前 checkout，不执行 fetch。
+- `--no-update` 仅在当前 checkout 的 HEAD 等于 `--ref` 时跳过 fetch。
 - `--dry-run` 只预览动作。
 - `--root DIR` 指定 canonical checkout；`--target DIR` 指定单个客户端的链接位置。
 
@@ -271,18 +275,18 @@ canonical checkout。
 
 ### 团队内部使用
 
-内部阶段使用团队私有仓库，并固定到经过审核的 ref：
+内部阶段使用团队私有仓库，并固定到经过审核的完整 commit ID：
 
 ```sh
 ~/code/remote-dev-execution/scripts/install-skill.sh \
   --repo git@github.com:your-org/remote-dev-execution.git \
-  --ref team-stable \
+  --ref FULL_COMMIT_SHA \
   --client claude
 ```
 
 不要把私有 deploy key、访问 Token 或私有项目路径写入 Skill；让 Git/SSH
-自己的 credential helper 处理认证。测试阶段可以使用分支，稳定分发应使用
-commit SHA 或 release tag。
+自己的 credential helper 处理认证。需要使用 release tag 时，先把它解析为
+完整 commit ID。
 
 ### Claude Code 的触发与提示词
 
@@ -410,17 +414,20 @@ doctor 报告执行失败或源码新鲜度尚未确认时，不要运行测试�
   'npm test -- --runInBand'
 ```
 
-summary 模式会先进入 `DEV_EXEC_DIR`，再执行 `DEV_EXEC_SHELL -lc`，将完整
-stdout/stderr 分别保存在调用方的私有日志中，只返回受限摘录、run ID 和 SSH
-状态。排错时原样复制 summary 输出的 `RUN_ID`：
+summary 模式会先进入 `DEV_EXEC_DIR`，再执行 `DEV_EXEC_SHELL -lc`，在调用方
+私有日志中分别保留每个流末尾最多 16 MiB，只返回受限摘录、run ID 和 SSH
+状态；发生截断时会在结果和元数据中标记。排错时原样复制 summary 输出的
+`RUN_ID`：
 
 ```sh
 ~/code/remote-dev-execution/scripts/dev-exec logs RUN_ID \
   --stderr --match 'ERROR|FAIL' --context 3
 ```
 
-完整日志保存在 Agent 环境的私有目录中，不在权威开发机上。只有明确需要
-无界实时输出时才使用 `dev-exec stream -- COMMAND`；旧的
+日志保存在 Agent 环境的私有目录中，不在权威开发机上。默认清理超过七天的
+run，并最多保留 50 个；可通过进程环境中的 `DEV_EXEC_LOG_MAX_KIB`、
+`DEV_EXEC_LOG_RETENTION_DAYS` 和 `DEV_EXEC_LOG_MAX_RUNS` 调整受限值。只有明确
+需要无界实时输出时才使用 `dev-exec stream -- COMMAND`；旧的
 `dev-exec -- COMMAND` 仍作为兼容的流式形式保留。
 
 ## Mutagen：可选，但源码新鲜度不可省略
@@ -555,6 +562,7 @@ ssh dev-vm true
 ```sh
 ~/code/remote-dev-execution/scripts/dev-relay setup dev-vm \
   --client claude \
+  --ref FULL_COMMIT_SHA \
   --project /absolute/path/to/project/on/vm \
            /absolute/path/to/project/on/mac \
   --shell /bin/zsh
@@ -588,11 +596,12 @@ VM 可以以当前 Mac 用户打开 shell，并不局限于某个项目目录，
 如果 relay 由旧版本创建，可以只补装 Agent Skill，不需要重建 relay：
 
 ```sh
-~/code/remote-dev-execution/scripts/dev-relay install-skill --client claude
+~/code/remote-dev-execution/scripts/dev-relay install-skill \
+  --client claude --ref FULL_COMMIT_SHA
 ```
 
-团队内部仓库或固定 release 可以在两条命令中增加 `--repo` 和 `--ref`。
-安装后重启 Agent，让它重新发现 Skill。
+团队内部仓库可在两条命令中增加 `--repo`。安装 Skill 时始终必须提供
+`--ref FULL_COMMIT_SHA`。安装后重启 Agent，让它重新发现 Skill。
 
 ### 启动、查看和停止
 
@@ -717,6 +726,7 @@ chmod 600 .dev-exec.env
 ssh dev-vm true
 ~/code/remote-dev-execution/scripts/dev-relay setup dev-vm \
   --client claude \
+  --ref FULL_COMMIT_SHA \
   --project /absolute/path/to/project/on/vm \
            /absolute/path/to/project/on/mac \
   --shell /bin/zsh
@@ -737,6 +747,7 @@ session。relay setup 时同时填写现有 session 名称和控制 alias：
 ```sh
 ~/code/remote-dev-execution/scripts/dev-relay setup VM_ALIAS \
   --client claude \
+  --ref FULL_COMMIT_SHA \
   --project /absolute/path/to/project/in/agent-environment \
            /absolute/path/to/project/in/authoritative-environment \
   --shell /bin/zsh \
@@ -795,12 +806,12 @@ git grep -n -I -E \
 
 ## 更新、卸载和公开发布
 
-更新到经过审核的 ref：
+更新到经过审核的完整 commit ID：
 
 ```sh
 ~/code/remote-dev-execution/scripts/install-skill.sh \
   --repo https://github.com/lajidonggua/remote-dev-execution.git \
-  --ref main \
+  --ref FULL_COMMIT_SHA \
   --client claude
 ```
 
@@ -808,8 +819,8 @@ git grep -n -I -E \
 是否删除 checkout 另行决定。
 
 公开发布前，先合并经过审核的变更，等待 `Validate` workflow 通过，再创建
-类似 `v0.1.0` 的 annotated tag，让用户安装固定 tag，而不是未经审核的移动
-分支。不要使用 `curl | sh`；先 clone 经过审核的仓库，再运行可见的安装脚本。
+类似 `v0.1.0` 的 annotated tag，把它解析成完整 commit ID 并发布给用户。
+不要使用 `curl | sh`；先 clone 经过审核的仓库，再运行可见的安装脚本。
 
 ## 验证改动
 

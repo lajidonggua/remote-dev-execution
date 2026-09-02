@@ -64,6 +64,66 @@ shell_quote() {
   printf "'%s'" "$escaped"
 }
 
+parse_config_value() {
+  parsed_name=$1
+  awk -v wanted="$parsed_name" '
+    BEGIN {
+      quote = sprintf("%c", 39)
+      backslash = sprintf("%c", 92)
+      bad = 0
+    }
+    function invalid() {
+      bad = 1
+      exit 1
+    }
+    function decode(value, result, position, remainder, closing) {
+      if (value == "") return ""
+      if (substr(value, 1, 1) != quote) {
+        if (value !~ /^[A-Za-z0-9_.\/:@%+,\[\]-]+$/) invalid()
+        return value
+      }
+      result = ""
+      position = 1
+      while (position <= length(value)) {
+        if (substr(value, position, 1) != quote) invalid()
+        position++
+        remainder = substr(value, position)
+        closing = index(remainder, quote)
+        if (closing == 0) invalid()
+        closing = position + closing - 1
+        result = result substr(value, position, closing - position)
+        position = closing + 1
+        if (position > length(value)) break
+        if (substr(value, position, 1) != backslash ||
+            substr(value, position + 1, 1) != quote) invalid()
+        result = result quote
+        position += 2
+      }
+      return result
+    }
+    {
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      if (line == "" || substr(line, 1, 1) == "#") next
+      if (line ~ /^export[[:space:]]+/) sub(/^export[[:space:]]+/, "", line)
+      equals = index(line, "=")
+      if (equals == 0) invalid()
+      name = substr(line, 1, equals - 1)
+      sub(/[[:space:]]*$/, "", name)
+      if (name !~ /^DEV_EXEC_(HOST|DIR|SHELL|MUTAGEN_SESSION|MUTAGEN_BIN|MUTAGEN_HOST)$/) invalid()
+      if (seen[name]++) invalid()
+      value = substr(line, equals + 1)
+      sub(/^[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      values[name] = decode(value)
+    }
+    END {
+      if (!bad && wanted in values) printf "%s", values[wanted]
+      if (bad) exit 1
+    }
+  ' "$config_file"
+}
+
 has_assignment() {
   assignment_name=$1
   grep -Eq "^[[:space:]]*(export[[:space:]]+)?${assignment_name}=" "$config_file"
@@ -210,8 +270,19 @@ config_file=$(find_config) ||
   fail "$EX_CONFIG" 'refusing to update a symlinked .dev-exec.env'
 [ -f "$config_file" ] ||
   fail "$EX_CONFIG" '.dev-exec.env is not a regular file'
-sh -n "$config_file" >/dev/null 2>&1 ||
-  fail "$EX_CONFIG" '.dev-exec.env is not valid POSIX shell syntax'
+config_owner=$(stat -f '%u' "$config_file" 2>/dev/null || stat -c '%u' "$config_file" 2>/dev/null) ||
+  fail "$EX_CONFIG" 'cannot inspect .dev-exec.env ownership'
+config_mode=$(stat -f '%Lp' "$config_file" 2>/dev/null || stat -c '%a' "$config_file" 2>/dev/null) ||
+  fail "$EX_CONFIG" 'cannot inspect .dev-exec.env permissions'
+[ "$config_owner" = "$(id -u)" ] ||
+  fail "$EX_CONFIG" '.dev-exec.env must be owned by the current user'
+case $config_mode in
+  ''|*[!0-7]*) fail "$EX_CONFIG" '.dev-exec.env has unrecognized permissions' ;;
+esac
+[ "$((0$config_mode & 022))" -eq 0 ] ||
+  fail "$EX_CONFIG" '.dev-exec.env must not be writable by group or other users'
+parse_config_value DEV_EXEC_HOST >/dev/null 2>&1 ||
+  fail "$EX_CONFIG" '.dev-exec.env must contain only supported literal assignments'
 project_root=${config_file%/*}
 [ -n "$project_root" ] || project_root=/
 ensure_project_config_ignored
@@ -221,12 +292,20 @@ bin_assignment_present=0
 has_assignment DEV_EXEC_MUTAGEN_SESSION && session_assignment_present=1
 has_assignment DEV_EXEC_MUTAGEN_BIN && bin_assignment_present=1
 
-unset DEV_EXEC_HOST DEV_EXEC_DIR DEV_EXEC_MUTAGEN_SESSION DEV_EXEC_MUTAGEN_BIN 2>/dev/null || true
-# The project config is trusted shell syntax; see references/configuration.md.
-# shellcheck disable=SC1090
-. "$config_file" >/dev/null 2>&1
-config_status=$?
-[ "$config_status" -eq 0 ] || fail "$EX_CONFIG" 'cannot load .dev-exec.env'
+unset DEV_EXEC_HOST DEV_EXEC_DIR DEV_EXEC_SHELL DEV_EXEC_MUTAGEN_SESSION \
+  DEV_EXEC_MUTAGEN_BIN DEV_EXEC_MUTAGEN_HOST 2>/dev/null || true
+DEV_EXEC_HOST=$(parse_config_value DEV_EXEC_HOST) ||
+  fail "$EX_CONFIG" 'cannot parse DEV_EXEC_HOST'
+DEV_EXEC_DIR=$(parse_config_value DEV_EXEC_DIR) ||
+  fail "$EX_CONFIG" 'cannot parse DEV_EXEC_DIR'
+DEV_EXEC_SHELL=$(parse_config_value DEV_EXEC_SHELL) ||
+  fail "$EX_CONFIG" 'cannot parse DEV_EXEC_SHELL'
+DEV_EXEC_MUTAGEN_SESSION=$(parse_config_value DEV_EXEC_MUTAGEN_SESSION) ||
+  fail "$EX_CONFIG" 'cannot parse DEV_EXEC_MUTAGEN_SESSION'
+DEV_EXEC_MUTAGEN_BIN=$(parse_config_value DEV_EXEC_MUTAGEN_BIN) ||
+  fail "$EX_CONFIG" 'cannot parse DEV_EXEC_MUTAGEN_BIN'
+DEV_EXEC_MUTAGEN_HOST=$(parse_config_value DEV_EXEC_MUTAGEN_HOST) ||
+  fail "$EX_CONFIG" 'cannot parse DEV_EXEC_MUTAGEN_HOST'
 
 [ -n "${DEV_EXEC_HOST:-}" ] || fail "$EX_CONFIG" 'DEV_EXEC_HOST is required in .dev-exec.env'
 [ -n "${DEV_EXEC_DIR:-}" ] || fail "$EX_CONFIG" 'DEV_EXEC_DIR is required in .dev-exec.env'

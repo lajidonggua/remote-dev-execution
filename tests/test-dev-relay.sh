@@ -13,6 +13,7 @@ fake_ssh=$fake_bin/ssh
 ssh_args=$test_root/ssh-args
 ssh_stdin=$test_root/ssh-stdin
 relay_config=$test_root/relay.env
+skill_commit=0123456789abcdef0123456789abcdef01234567
 mkdir -p "$test_home" "$fake_bin"
 
 help_output=$("$relay" --help)
@@ -55,10 +56,10 @@ FAKE_SSH_STDIN="$ssh_stdin" \
   "$relay" install-skill \
     --client both \
     --repo https://example.invalid/remote-dev-execution.git \
-    --ref v0.2.0 >/dev/null
+    --ref "$skill_commit" >/dev/null
 
 grep -Fqx 'test-vm' "$ssh_args"
-grep -Fq "sh -s -- --repo 'https://example.invalid/remote-dev-execution.git' --ref 'v0.2.0' --client 'both'" "$ssh_args"
+grep -Fq "sh -s -- --repo 'https://example.invalid/remote-dev-execution.git' --ref '$skill_commit' --client 'both'" "$ssh_args"
 grep -Fq 'Install the canonical checkout and link it into a user-level Skill directory.' "$ssh_stdin"
 
 : > "$ssh_args"
@@ -68,6 +69,17 @@ if HOME="$test_home" \
   FAKE_SSH_STDIN="$ssh_stdin" \
     "$relay" install-skill --client invalid >/dev/null 2>&1; then
   printf '%s\n' 'dev-relay unexpectedly accepted an invalid Skill client' >&2
+  exit 1
+fi
+[ ! -s "$ssh_args" ]
+
+: > "$ssh_args"
+if HOME="$test_home" \
+  DEV_RELAY_CONFIG="$relay_config" \
+  FAKE_SSH_ARGS="$ssh_args" \
+  FAKE_SSH_STDIN="$ssh_stdin" \
+    "$relay" install-skill --client codex --ref main >/dev/null 2>&1; then
+  printf '%s\n' 'dev-relay unexpectedly accepted a moving Skill ref' >&2
   exit 1
 fi
 [ ! -s "$ssh_args" ]

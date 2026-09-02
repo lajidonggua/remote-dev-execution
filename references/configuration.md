@@ -22,6 +22,7 @@ Use the setup command on the authoritative Mac when a reverse relay manages the 
 ```sh
 dev-relay setup VM_ALIAS \
   --client claude \
+  --ref FULL_COMMIT_SHA \
   --project AGENT_PROJECT_DIR AUTHORITATIVE_PROJECT_DIR \
   --shell /bin/zsh \
   --mutagen MUTAGEN_SESSION \
@@ -41,7 +42,7 @@ dev-relay setup VM_ALIAS \
 | `--mutagen-bin BIN` | Optional; requires `--project` and `--mutagen` | Mutagen executable name or absolute path in the selected control environment. Setup stores it as `DEV_EXEC_MUTAGEN_BIN`; useful when non-interactive SSH has a minimal `PATH`. |
 | `--clear-mutagen` | Optional; requires `--project` | Explicitly remove managed `DEV_EXEC_MUTAGEN_SESSION`, `DEV_EXEC_MUTAGEN_BIN`, and `DEV_EXEC_MUTAGEN_HOST` assignments from an existing generated project config. Cannot be combined with `--mutagen`. |
 | `--repo REPOSITORY` | Optional; requires `--client` during `setup` | Git repository used for the canonical Skill checkout. |
-| `--ref REF` | Optional; requires `--client` during `setup` | Branch, tag, or commit installed from the Skill repository. Defaults to `main`. |
+| `--ref COMMIT` | Required with `--client` | Full reviewed 40- or 64-hex commit ID installed from the Skill repository. Moving branches and tags are rejected. |
 
 `--client` does not select the authoritative destination; `DEV_EXEC_HOST` and `DEV_EXEC_DIR` do that. Omit `--client` only when the required Skill link is already installed or the Agent does not need this Skill.
 
@@ -62,6 +63,7 @@ For a relay-managed VM, the Mac setup command can generate the project file afte
 ```sh
 ~/code/remote-dev-execution/scripts/dev-relay setup VM_ALIAS \
   --client claude \
+  --ref FULL_COMMIT_SHA \
   --project /absolute/path/to/project/on/the/vm \
            /absolute/path/to/project/on/the/mac \
   --shell /bin/zsh \
@@ -100,7 +102,11 @@ Copy `assets/.dev-exec.env.example` into the business project's root as `.dev-ex
 
 ## File Format and Trust
 
-The wrapper sources `.dev-exec.env` as POSIX shell syntax so quoted values work. Keep it to simple variable assignments:
+The wrapper parses `.dev-exec.env` as data and never executes it. The file may
+contain blank lines, comments, an optional `export`, and one literal assignment
+for each supported variable. Values may be unquoted safe tokens or
+single-quoted literals; shell expansion, commands, double quotes, duplicate or
+unknown assignments, and inline comments are rejected.
 
 ```sh
 DEV_EXEC_HOST=dev-machine
@@ -111,9 +117,13 @@ DEV_EXEC_SHELL=/bin/zsh
 # DEV_EXEC_MUTAGEN_HOST=sync-control
 ```
 
-Treat the file as executable configuration:
+The wrapper also rejects symlinked, non-user-owned, or group/world-writable
+project configuration. When Git is available, it also rejects Git-tracked
+configuration. This prevents a cloned repository from silently introducing a
+local execution or destination trust anchor.
 
-- Use it only in repositories and directories you trust.
+Treat the destination values as security-sensitive configuration:
+
 - Do not place tokens, passwords, private keys, or other secrets in it.
 - Keep SSH connection details and credentials in the normal SSH configuration and keychain.
 - Do not commit the project-specific file.
@@ -132,9 +142,17 @@ Pass one quoted string when shell syntax must be interpreted remotely:
 dev-exec summary 'npm test -- --runInBand'
 ```
 
-The remote command starts in `DEV_EXEC_DIR`. Summary mode captures complete stdout and stderr separately in a private caller-side state directory, returns bounded excerpts and an opaque run ID, and preserves the SSH process status. Inspect retained output with `dev-exec logs RUN_ID`; add `--stdout` or `--stderr`, `--tail LINES`, `--max-bytes BYTES`, or `--match ERE --context LINES` to narrow the read. A query cannot exceed 200 lines, 16 KiB per selected stream, or 20 context lines.
+The remote command starts in `DEV_EXEC_DIR`. Summary mode drains stdout and
+stderr separately while retaining at most the final 16 MiB of each stream in a
+private caller-side state directory. It returns sanitized bounded excerpts and
+an opaque run ID, marks truncation, and preserves the SSH process status.
+Inspect retained output with `dev-exec logs RUN_ID`; add `--stdout` or
+`--stderr`, `--tail LINES`, `--max-bytes BYTES`, or `--match ERE --context
+LINES` to narrow the read. A query cannot exceed 200 lines, 16 KiB per selected
+stream, or 20 context lines. Displayed excerpts replace terminal C0/DEL control
+bytes other than tab and newline.
 
-Use `dev-exec stream -- COMMAND` only when unbounded live output is intentionally required. The legacy `dev-exec -- COMMAND` form remains a streaming alias for compatibility. Override the private state directory only through the process environment with `DEV_EXEC_LOG_DIR=/absolute/path`; do not store this caller-side path in `.dev-exec.env`.
+Use `dev-exec stream -- COMMAND` only when unbounded live output is intentionally required. The legacy `dev-exec -- COMMAND` form remains a streaming alias for compatibility. Override the private state directory only through the process environment with `DEV_EXEC_LOG_DIR=/absolute/path`; do not store this caller-side path in `.dev-exec.env`. Summary mode prunes runs older than seven days and keeps at most 50 by default. Process-only `DEV_EXEC_LOG_MAX_KIB` (maximum 65536 per stream), `DEV_EXEC_LOG_RETENTION_DAYS` (maximum 3650), and `DEV_EXEC_LOG_MAX_RUNS` (maximum 1000) adjust those bounded policies.
 
 The wrapper requires batch authentication and strict host-key checking; trust the alias with ordinary SSH before invoking it.
 

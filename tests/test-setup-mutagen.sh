@@ -158,6 +158,29 @@ grep -Fq 'cannot create the Mutagen synchronization session' "$error"
 ! grep -Fq 'test-host' "$error"
 ! grep -Fq '/authoritative/project' "$error"
 
+unsafe_project=$test_root/unsafe-project
+unsafe_marker=$test_root/unsafe-config-executed
+unsafe_log=$test_root/unsafe.log
+mkdir -p "$unsafe_project"
+cat > "$unsafe_project/.dev-exec.env" <<EOF
+touch '$unsafe_marker'
+DEV_EXEC_HOST=test-host
+DEV_EXEC_DIR=/authoritative/project
+DEV_EXEC_MUTAGEN_BIN=$fake_mutagen
+EOF
+status=0
+if PATH="$fake_bin:$PATH" FAKE_MUTAGEN_LOG="$unsafe_log" \
+    sh -c "cd '$unsafe_project' && '$setup_mutagen' --name unsafe-session" \
+      > "$output" 2> "$error"; then
+  status=0
+else
+  status=$?
+fi
+[ "$status" -eq 78 ]
+grep -Fq 'only supported literal assignments' "$error"
+[ ! -e "$unsafe_marker" ]
+[ ! -e "$unsafe_log" ]
+
 tracked_project=$test_root/tracked-project
 tracked_state=$test_root/tracked.state
 tracked_log=$test_root/tracked.log

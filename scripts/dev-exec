@@ -1,6 +1,7 @@
 #!/bin/sh
 
 set -u
+umask 077
 
 usage() {
   cat <<'EOF'
@@ -22,8 +23,9 @@ The doctor command verifies configuration, synchronization preflight, and
 delegated execution without disclosing infrastructure details. --verbose
 shows the underlying diagnostic output.
 
-Summary mode retains complete stdout and stderr in a private local run log,
-returns bounded excerpts, and preserves SSH's exit status. Use logs with the
+Summary mode drains stdout and stderr while retaining at most the final 16 MiB
+of each stream in a private local run log. It returns sanitized bounded
+excerpts, marks truncation, and preserves SSH's exit status. Use logs with the
 reported run ID for bounded follow-up inspection. Stream mode is the legacy
 unbounded behavior and remains the default for compatibility.
 EOF
@@ -72,6 +74,132 @@ reject_newline() {
   esac
 }
 
+parse_config_value() {
+  parsed_name=$1
+  awk -v wanted="$parsed_name" '
+    BEGIN {
+      quote = sprintf("%c", 39)
+      backslash = sprintf("%c", 92)
+      bad = 0
+    }
+    function invalid() {
+      bad = 1
+      exit 1
+    }
+    function decode(value, result, position, remainder, closing) {
+      if (value == "") {
+        return ""
+      }
+      if (substr(value, 1, 1) != quote) {
+        if (value !~ /^[A-Za-z0-9_.\/:@%+,\[\]-]+$/) {
+          invalid()
+        }
+        return value
+      }
+      result = ""
+      position = 1
+      while (position <= length(value)) {
+        if (substr(value, position, 1) != quote) {
+          invalid()
+        }
+        position++
+        remainder = substr(value, position)
+        closing = index(remainder, quote)
+        if (closing == 0) {
+          invalid()
+        }
+        closing = position + closing - 1
+        result = result substr(value, position, closing - position)
+        position = closing + 1
+        if (position > length(value)) {
+          break
+        }
+        if (substr(value, position, 1) != backslash ||
+            substr(value, position + 1, 1) != quote) {
+          invalid()
+        }
+        result = result quote
+        position += 2
+      }
+      return result
+    }
+    {
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      if (line == "" || substr(line, 1, 1) == "#") {
+        next
+      }
+      if (line ~ /^export[[:space:]]+/) {
+        sub(/^export[[:space:]]+/, "", line)
+      }
+      equals = index(line, "=")
+      if (equals == 0) {
+        invalid()
+      }
+      name = substr(line, 1, equals - 1)
+      sub(/[[:space:]]*$/, "", name)
+      if (name !~ /^DEV_EXEC_(HOST|DIR|SHELL|MUTAGEN_SESSION|MUTAGEN_BIN|MUTAGEN_HOST)$/) {
+        invalid()
+      }
+      if (seen[name]++) {
+        invalid()
+      }
+      value = substr(line, equals + 1)
+      sub(/^[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      values[name] = decode(value)
+    }
+    END {
+      if (!bad && wanted in values) {
+        printf "%s", values[wanted]
+      }
+      if (bad) {
+        exit 1
+      }
+    }
+  ' "$config_file"
+}
+
+config_is_tracked() {
+  command -v git >/dev/null 2>&1 || return 1
+  config_parent=${config_file%/*}
+  [ -n "$config_parent" ] || config_parent=/
+  config_repo=$(git -C "$config_parent" rev-parse --show-toplevel 2>/dev/null) || return 1
+  case $config_file in
+    "$config_repo"/*) config_relative=${config_file#"$config_repo"/} ;;
+    *) return 1 ;;
+  esac
+  git -C "$config_repo" ls-files --error-unmatch -- "$config_relative" >/dev/null 2>&1
+}
+
+validate_config_file() {
+  [ ! -L "$config_file" ] || return 1
+  [ -f "$config_file" ] || return 1
+  config_owner=$(stat -f '%u' "$config_file" 2>/dev/null || stat -c '%u' "$config_file" 2>/dev/null) ||
+    return 1
+  config_mode=$(stat -f '%Lp' "$config_file" 2>/dev/null || stat -c '%a' "$config_file" 2>/dev/null) ||
+    return 1
+  current_uid=$(id -u 2>/dev/null) || return 1
+  [ "$config_owner" = "$current_uid" ] || return 1
+  case $config_mode in
+    ''|*[!0-7]*) return 1 ;;
+  esac
+  [ "$((0$config_mode & 022))" -eq 0 ] || return 1
+  config_is_tracked && return 1
+  parse_config_value DEV_EXEC_HOST >/dev/null
+}
+
+configuration_fail() {
+  if [ "$doctor_mode" -eq 1 ]; then
+    doctor_fail 'configuration: invalid or unsafe'
+  elif [ "$output_mode" = summary ]; then
+    printf '%s\n' 'dev-exec: configuration is invalid or unsafe; command not started' >&2
+  else
+    printf 'dev-exec: configuration is invalid or unsafe: %s\n' "$config_file" >&2
+  fi
+  exit 64
+}
+
 require_positive_integer() {
   value_name=$1
   value=$2
@@ -115,6 +243,92 @@ prepare_log_dir() {
   chmod 0700 "$resolved_log_dir" || fail 'cannot secure the dev-exec log directory'
 }
 
+resolve_log_policy() {
+  log_limit_kib=${DEV_EXEC_LOG_MAX_KIB:-16384}
+  log_retention_days=${DEV_EXEC_LOG_RETENTION_DAYS:-7}
+  log_max_runs=${DEV_EXEC_LOG_MAX_RUNS:-50}
+  require_positive_integer DEV_EXEC_LOG_MAX_KIB "$log_limit_kib"
+  require_nonnegative_integer DEV_EXEC_LOG_RETENTION_DAYS "$log_retention_days"
+  require_positive_integer DEV_EXEC_LOG_MAX_RUNS "$log_max_runs"
+  case $log_limit_kib in
+    ??????*) fail 'DEV_EXEC_LOG_MAX_KIB cannot exceed 65536' ;;
+  esac
+  [ "$log_limit_kib" -le 65536 ] || fail 'DEV_EXEC_LOG_MAX_KIB cannot exceed 65536'
+  case $log_retention_days in
+    ?????*) fail 'DEV_EXEC_LOG_RETENTION_DAYS cannot exceed 3650' ;;
+  esac
+  [ "$log_retention_days" -le 3650 ] || fail 'DEV_EXEC_LOG_RETENTION_DAYS cannot exceed 3650'
+  case $log_max_runs in
+    ?????*) fail 'DEV_EXEC_LOG_MAX_RUNS cannot exceed 1000' ;;
+  esac
+  [ "$log_max_runs" -le 1000 ] || fail 'DEV_EXEC_LOG_MAX_RUNS cannot exceed 1000'
+  log_limit_bytes=$((log_limit_kib * 1024))
+}
+
+cleanup_retained_logs() {
+  cleanup_index=$(mktemp "$resolved_log_dir/.cleanup.XXXXXXXX") ||
+    fail 'cannot create the dev-exec cleanup index'
+  : > "$cleanup_index"
+  for retained_dir in "$resolved_log_dir"/run.*; do
+    [ -d "$retained_dir" ] || continue
+    [ ! -L "$retained_dir" ] || continue
+    retained_id=${retained_dir##*/}
+    case $retained_id in
+      run.*) ;;
+      *) continue ;;
+    esac
+    case $retained_id in
+      *[!A-Za-z0-9._-]*) continue ;;
+    esac
+    if find "$retained_dir" -prune -mtime "+$log_retention_days" -print |
+      grep -q .; then
+      rm -rf -- "$retained_dir" || {
+        rm -f "$cleanup_index"
+        fail 'cannot remove an expired dev-exec run log'
+      }
+    elif [ -d "$retained_dir" ]; then
+      printf '%s\n' "$retained_dir" >> "$cleanup_index" || {
+        rm -f "$cleanup_index"
+        fail 'cannot update the dev-exec cleanup index'
+      }
+    fi
+  done
+  sort -r "$cleanup_index" > "$cleanup_index.sorted" || {
+    rm -f "$cleanup_index" "$cleanup_index.sorted"
+    fail 'cannot sort the dev-exec cleanup index'
+  }
+  retained_count=0
+  while IFS= read -r retained_dir; do
+    retained_count=$((retained_count + 1))
+    if [ "$retained_count" -ge "$log_max_runs" ]; then
+      rm -rf -- "$retained_dir" || {
+        rm -f "$cleanup_index" "$cleanup_index.sorted"
+        fail 'cannot enforce the dev-exec run retention limit'
+      }
+    fi
+  done < "$cleanup_index.sorted"
+  rm -f "$cleanup_index" "$cleanup_index.sorted"
+}
+
+capture_stream() {
+  capture_fifo=$1
+  capture_log=$2
+  tail -c "$((log_limit_bytes + 1))" < "$capture_fifo" > "$capture_log"
+}
+
+finish_captured_stream() {
+  captured_log=$1
+  truncated_file=$2
+  captured_bytes=$(file_bytes "$captured_log")
+  if [ "$captured_bytes" -gt "$log_limit_bytes" ]; then
+    tail -c "$log_limit_bytes" "$captured_log" > "$captured_log.trimmed" || return 1
+    mv "$captured_log.trimmed" "$captured_log" || return 1
+    printf '%s\n' yes > "$truncated_file" || return 1
+  else
+    printf '%s\n' no > "$truncated_file" || return 1
+  fi
+}
+
 file_bytes() {
   wc -c < "$1" | tr -d '[:space:]'
 }
@@ -132,7 +346,7 @@ emit_excerpt_stdout() {
   printf '\n--- %s (last %s lines, at most %s bytes) ---\n' \
     "$excerpt_label" "$excerpt_lines" "$excerpt_bytes"
   tail -n "$excerpt_lines" "$excerpt_file" | tail -c "$excerpt_bytes" |
-    LC_ALL=C tr '\000' '?'
+    sanitize_display
   printf '\n'
 }
 
@@ -146,9 +360,13 @@ emit_excerpt_stderr() {
     printf '\n--- %s (last %s lines, at most %s bytes) ---\n' \
       "$excerpt_label" "$excerpt_lines" "$excerpt_bytes"
     tail -n "$excerpt_lines" "$excerpt_file" | tail -c "$excerpt_bytes" |
-      LC_ALL=C tr '\000' '?'
+      sanitize_display
     printf '\n'
   } >&2
+}
+
+sanitize_display() {
+  LC_ALL=C tr '\000-\010\013-\014\015-\037\177' '?'
 }
 
 validate_run_id() {
@@ -177,10 +395,10 @@ emit_log_file() {
       return 0
     fi
     grep -aE -n -C "$query_context" -- "$query_pattern" "$query_file" |
-      tail -n "$query_tail" | tail -c "$query_bytes" | LC_ALL=C tr '\000' '?'
+      tail -n "$query_tail" | tail -c "$query_bytes" | sanitize_display
   else
     tail -n "$query_tail" "$query_file" | tail -c "$query_bytes" |
-      LC_ALL=C tr '\000' '?'
+      sanitize_display
   fi
   printf '\n'
 }
@@ -365,34 +583,16 @@ if [ "${DEV_EXEC_LOG_DIR+x}" = x ]; then
 fi
 
 config_file=$(find_config) || config_file=
+unset DEV_EXEC_HOST DEV_EXEC_DIR DEV_EXEC_SHELL DEV_EXEC_MUTAGEN_SESSION \
+  DEV_EXEC_MUTAGEN_BIN DEV_EXEC_MUTAGEN_HOST DEV_EXEC_LOG_DIR 2>/dev/null || true
 if [ -n "$config_file" ]; then
-  # The project config is trusted shell syntax; see references/configuration.md.
-  # shellcheck disable=SC1090
-  if { [ "$doctor_mode" -eq 1 ] && [ "$doctor_verbose" -eq 0 ]; } ||
-    [ "$output_mode" = summary ]; then
-    if ! sh -n "$config_file" >/dev/null 2>&1; then
-      if [ "$doctor_mode" -eq 1 ]; then
-        doctor_fail 'configuration: invalid'
-      else
-        printf '%s\n' 'dev-exec: configuration is invalid; command not started' >&2
-      fi
-      exit 64
-    fi
-    . "$config_file" >/dev/null 2>&1
-  else
-    . "$config_file"
-  fi
-  config_status=$?
-  if [ "$config_status" -ne 0 ]; then
-    if [ "$doctor_mode" -eq 1 ] && [ "$doctor_verbose" -eq 0 ]; then
-      doctor_fail 'configuration: invalid'
-    elif [ "$output_mode" = summary ]; then
-      printf '%s\n' 'dev-exec: configuration failed to load; command not started' >&2
-    else
-      printf 'dev-exec: failed to load %s\n' "$config_file" >&2
-    fi
-    exit "$config_status"
-  fi
+  validate_config_file || configuration_fail
+  DEV_EXEC_HOST=$(parse_config_value DEV_EXEC_HOST) || configuration_fail
+  DEV_EXEC_DIR=$(parse_config_value DEV_EXEC_DIR) || configuration_fail
+  DEV_EXEC_SHELL=$(parse_config_value DEV_EXEC_SHELL) || configuration_fail
+  DEV_EXEC_MUTAGEN_SESSION=$(parse_config_value DEV_EXEC_MUTAGEN_SESSION) || configuration_fail
+  DEV_EXEC_MUTAGEN_BIN=$(parse_config_value DEV_EXEC_MUTAGEN_BIN) || configuration_fail
+  DEV_EXEC_MUTAGEN_HOST=$(parse_config_value DEV_EXEC_MUTAGEN_HOST) || configuration_fail
 fi
 
 if [ "$saved_host_set" -eq 1 ]; then
@@ -633,26 +833,61 @@ if [ "$output_mode" = stream ]; then
 fi
 
 prepare_log_dir
-umask 077
-run_dir=$(mktemp -d "$resolved_log_dir/run.XXXXXXXX") ||
+resolve_log_policy
+cleanup_retained_logs
+run_timestamp=$(date -u '+%Y%m%dT%H%M%SZ') || fail 'cannot create a dev-exec run timestamp'
+run_dir=$(mktemp -d "$resolved_log_dir/run.$run_timestamp.XXXXXXXX") ||
   fail 'cannot create a dev-exec run log directory'
 [ ! -L "$run_dir" ] || fail 'refusing to use a symlinked dev-exec run directory'
 run_id=${run_dir##*/}
 stdout_log=$run_dir/stdout.log
 stderr_log=$run_dir/stderr.log
-: > "$stdout_log" || fail 'cannot create the dev-exec stdout log'
-: > "$stderr_log" || fail 'cannot create the dev-exec stderr log'
+stdout_fifo=$run_dir/stdout.pipe
+stderr_fifo=$run_dir/stderr.pipe
+stdout_truncated_file=$run_dir/stdout.truncated
+stderr_truncated_file=$run_dir/stderr.truncated
+mkfifo "$stdout_fifo" "$stderr_fifo" || fail 'cannot create dev-exec capture pipes'
+
+stdout_collector=
+stderr_collector=
+summary_abort() {
+  [ -z "$stdout_collector" ] || kill "$stdout_collector" 2>/dev/null || true
+  [ -z "$stderr_collector" ] || kill "$stderr_collector" 2>/dev/null || true
+  rm -f "$stdout_fifo" "$stderr_fifo"
+  exit 129
+}
+trap 'summary_abort' HUP INT TERM
+capture_stream "$stdout_fifo" "$stdout_log" &
+stdout_collector=$!
+capture_stream "$stderr_fifo" "$stderr_log" &
+stderr_collector=$!
 
 execution_status=0
 ssh -T -o BatchMode=yes -o ClearAllForwardings=yes -o ForwardAgent=no \
   -o ForwardX11=no -o RequestTTY=no -o StrictHostKeyChecking=yes \
-  "$DEV_EXEC_HOST" "$remote_invocation" > "$stdout_log" 2> "$stderr_log" ||
+  "$DEV_EXEC_HOST" "$remote_invocation" > "$stdout_fifo" 2> "$stderr_fifo" ||
   execution_status=$?
+
+collector_status=0
+wait "$stdout_collector" || collector_status=$?
+wait "$stderr_collector" || collector_status=$?
+trap - HUP INT TERM
+rm -f "$stdout_fifo" "$stderr_fifo"
+[ "$collector_status" -eq 0 ] || fail 'dev-exec output capture failed'
+finish_captured_stream "$stdout_log" "$stdout_truncated_file" ||
+  fail 'cannot finalize the dev-exec stdout log'
+finish_captured_stream "$stderr_log" "$stderr_truncated_file" ||
+  fail 'cannot finalize the dev-exec stderr log'
 
 stdout_bytes=$(file_bytes "$stdout_log")
 stderr_bytes=$(file_bytes "$stderr_log")
 stdout_lines=$(file_lines "$stdout_log")
 stderr_lines=$(file_lines "$stderr_log")
+IFS= read -r stdout_truncated < "$stdout_truncated_file" ||
+  fail 'cannot read dev-exec stdout truncation state'
+IFS= read -r stderr_truncated < "$stderr_truncated_file" ||
+  fail 'cannot read dev-exec stderr truncation state'
+rm -f "$stdout_truncated_file" "$stderr_truncated_file"
 if [ "$execution_status" -eq 0 ]; then
   result_status=succeeded
 else
@@ -666,10 +901,15 @@ fi
   printf 'stderr_bytes: %s\n' "$stderr_bytes"
   printf 'stdout_lines: %s\n' "$stdout_lines"
   printf 'stderr_lines: %s\n' "$stderr_lines"
+  printf 'stdout_truncated: %s\n' "$stdout_truncated"
+  printf 'stderr_truncated: %s\n' "$stderr_truncated"
+  printf 'retained_limit_bytes_per_stream: %s\n' "$log_limit_bytes"
 } > "$run_dir/meta" || fail 'cannot write dev-exec run metadata'
 
-printf 'dev-exec result: run=%s status=%s exit=%s stdout=%sB stderr=%sB\n' \
-  "$run_id" "$result_status" "$execution_status" "$stdout_bytes" "$stderr_bytes"
+printf 'dev-exec result: run=%s status=%s exit=%s stdout=%sB%s stderr=%sB%s\n' \
+  "$run_id" "$result_status" "$execution_status" \
+  "$stdout_bytes" "$( [ "$stdout_truncated" = yes ] && printf '+' )" \
+  "$stderr_bytes" "$( [ "$stderr_truncated" = yes ] && printf '+' )"
 printf 'dev-exec logs: use `dev-exec logs %s` for bounded follow-up inspection\n' "$run_id"
 
 if [ "$execution_status" -eq 0 ]; then

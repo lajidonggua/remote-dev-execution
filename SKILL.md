@@ -18,7 +18,7 @@ Read [references/reverse-relay.md](references/reverse-relay.md) when a non-admin
 
 Read [references/agent-validation.md](references/agent-validation.md) when verifying that an agent delegates tests correctly without exposing operating systems, transport, hostnames, usernames, or machine paths.
 
-When the active agent runs in a VM, install this Skill in that VM's user-level directory. The Mac's `~/.claude/skills` and `~/.agents/skills` are separate filesystems. Use `scripts/install-skill.sh` with a canonical Git checkout and a pinned team branch, commit, or release tag; never copy machine-specific configuration into the Skill repository.
+When the active agent runs in a VM, install this Skill in that VM's user-level directory. The Mac's `~/.claude/skills` and `~/.agents/skills` are separate filesystems. Use `scripts/install-skill.sh` with a canonical Git checkout and the full reviewed commit ID; never copy machine-specific configuration into the Skill repository.
 
 ## Establish Connectivity
 
@@ -29,9 +29,9 @@ When the active agent runs in a VM, install this Skill in that VM's user-level d
 - Prefer Mutagen for separate checkouts. If no session exists, generate `.dev-exec.env` first without `--mutagen`, then, only when the user requests synchronization setup, run `scripts/setup-mutagen.sh --install --name SESSION` in the Agent project. Add project-specific `--ignore` values only after inspecting its manifests and generated directories.
 - Use `--mutagen SESSION` during relay setup only for a reviewed existing session. If its Mutagen daemon is in another approved environment, add `--mutagen-host CONTROL_HOST` and, when needed, `--mutagen-bin BIN`; this makes the wrapper run its synchronization preflight there. Otherwise the session must be available where `dev-exec` runs.
 - When rerunning relay setup for a generated project config, omit `--mutagen` to preserve existing Mutagen assignments. Use `--clear-mutagen` only after explicitly confirming a shared checkout or another verified freshness mechanism.
-- Use `dev-relay install-skill --client CLIENT` to repair an existing relay whose Agent environment has the wrapper but not the Skill, then restart the Agent session.
+- Use `dev-relay install-skill --client CLIENT --ref FULL_COMMIT_SHA` to repair an existing relay whose Agent environment has the wrapper but not the Skill, then restart the Agent session.
 - Run `dev-relay status` on the Mac before diagnosing `dev-exec` through a relay.
-- Use `dev-exec summary` for ordinary non-interactive commands. It preserves complete stdout and stderr in private caller-side logs while returning bounded excerpts and the original SSH status.
+- Use `dev-exec summary` for ordinary non-interactive commands. It retains a bounded tail of stdout and stderr in private caller-side logs while returning sanitized excerpts and the original SSH status.
 - Run `dev-exec doctor` after first-time configuration or whenever execution provenance is uncertain. Its default output is redacted; use `--verbose` only when the user accepts infrastructure details in diagnostic output.
 - Use direct `ssh -t` through the relay alias for an interactive shell or terminal debugger.
 - Forward debug protocol ports only when the user explicitly configures them, and bind both ends to loopback.
@@ -76,8 +76,8 @@ Do not hard-code a language, framework, build system, or test command in advance
 - Accept a successful summary without expanding routine output. On failure, use the reported run ID with `dev-exec logs RUN_ID --stderr --match 'ERROR|FAIL' --context 3` or another narrow query.
 - Each `logs` query is line- and byte-bounded. Read at most three non-overlapping excerpts for one failure before narrowing the command or search pattern instead of widening the dump.
 - Use `dev-exec stream` only for an interactive debugger, a deliberately observed service, or when the user explicitly requests unbounded live output. Never use stream mode for an ordinary build or test.
-- Do not use `cat`, unbounded `tee`, or a producer pipeline to truncate logs. Summary mode captures the complete streams before excerpting, so it does not mask the command status or terminate the producer early.
-- Apply the existing infrastructure-redaction rules to displayed excerpts. Never display credentials, tokens, secrets, or sensitive environment values. Full logs may also contain sensitive output; inspect them only through the narrowest necessary query.
+- Do not use `cat`, unbounded `tee`, or a producer pipeline to truncate logs. Summary mode drains both streams while retaining bounded tails, so it does not mask the command status or terminate the producer early.
+- Apply the existing infrastructure-redaction rules to displayed excerpts. Never display credentials, tokens, secrets, or sensitive environment values. Retained logs may also contain sensitive output; inspect them only through the narrowest necessary query.
 
 ## Preserve the Environment Boundary
 
@@ -93,7 +93,7 @@ Do not hard-code a language, framework, build system, or test command in advance
 
 ## Interpret Results
 
-Summary mode stores complete remote stdout and stderr separately on the caller, returns bounded excerpts plus an opaque run ID, and exits with SSH's status, which reflects the remote command status when the connection succeeds. Stream mode writes both streams directly to the caller. Mutagen flush and health failures prevent remote execution in either mode.
+Summary mode stores bounded tails of remote stdout and stderr separately on the caller, returns sanitized excerpts plus an opaque run ID, marks truncation, and exits with SSH's status, which reflects the remote command status when the connection succeeds. Stream mode writes both streams directly to the caller. Mutagen flush and health failures prevent remote execution in either mode.
 
 Distinguish code failures from environment failures:
 

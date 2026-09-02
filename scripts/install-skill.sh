@@ -8,7 +8,7 @@ EX_CONFIG=78
 EX_UNAVAILABLE=69
 
 DEFAULT_REPO=${REMOTE_DEV_EXECUTION_REPO:-https://github.com/lajidonggua/remote-dev-execution.git}
-DEFAULT_REF=${REMOTE_DEV_EXECUTION_REF:-main}
+DEFAULT_REF=${REMOTE_DEV_EXECUTION_REF:-}
 newline='
 '
 
@@ -22,7 +22,7 @@ The default client is Claude Code. Use --client both for Claude and Codex.
 
 Options:
   --repo URL       Git repository URL or local clone source.
-  --ref REF        Branch, tag, or commit to use (default: main).
+  --ref COMMIT     Full 40- or 64-hex commit ID to install (required).
   --root DIR       Canonical checkout (default: ~/code/remote-dev-execution).
   --target DIR     Skill link target for a single client.
   --client NAME    claude, codex, or both (default: claude).
@@ -74,6 +74,19 @@ require_ref() {
   esac
 }
 
+require_immutable_ref() {
+  immutable_ref=$1
+  case $immutable_ref in
+    *[!A-Fa-f0-9]*)
+      fail "$EX_USAGE" '--ref must be a full 40- or 64-hex commit ID'
+      ;;
+  esac
+  case ${#immutable_ref} in
+    40|64) ;;
+    *) fail "$EX_USAGE" '--ref must be a full 40- or 64-hex commit ID' ;;
+  esac
+}
+
 repo_identity() {
   repo_value=$1
   case $repo_value in
@@ -103,6 +116,13 @@ checkout_is_clean() {
     fail "$EX_CONFIG" "cannot inspect checkout: $root_dir"
   [ -z "$checkout_status" ] ||
     fail "$EX_CONFIG" "checkout has local changes; commit or stash them before updating: $root_dir"
+}
+
+checkout_matches_ref() {
+  checkout_commit=$("$git_cmd" -C "$root_dir" rev-parse HEAD 2>/dev/null) ||
+    fail "$EX_CONFIG" "cannot resolve checkout commit: $root_dir"
+  [ "$checkout_commit" = "$ref_name" ] ||
+    fail "$EX_CONFIG" "checkout HEAD does not match --ref: $root_dir"
 }
 
 verify_checkout() {
@@ -272,6 +292,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 require_absolute_path CANONICAL_CHECKOUT "$root_dir"
+require_ref "$ref_name"
+require_immutable_ref "$ref_name"
 if [ -n "$custom_target" ]; then
   require_absolute_path SKILL_TARGET "$custom_target"
 fi
@@ -295,6 +317,7 @@ if [ -e "$root_dir" ] || [ -L "$root_dir" ]; then
   verify_checkout
   verify_origin
   if [ "$no_update" -eq 1 ]; then
+    checkout_matches_ref
     say "using existing checkout without updating: $root_dir"
   elif [ "$dry_run" -eq 1 ]; then
     checkout_is_clean

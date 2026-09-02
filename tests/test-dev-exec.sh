@@ -136,6 +136,25 @@ grep -Fqx 'dev-exec doctor: synchronization session: available' "$doctor_output"
 grep -Fqx 'dev-exec doctor: synchronization health: healthy' "$doctor_output"
 grep -Fqx 'dev-exec doctor: synchronization preflight: passed' "$doctor_output"
 grep -Fqx 'dev-exec doctor: authoritative execution: ready' "$doctor_output"
+
+literal_project=$test_root/literal-project
+literal_authoritative="$test_root/authoritative project's path"
+mkdir -p "$literal_project" "$literal_authoritative"
+literal_authoritative=$(CDPATH= cd -P "$literal_authoritative" && pwd -P)
+literal_dir_escaped=$(printf '%s_' "$literal_authoritative" | sed "s/'/'\\\\''/g")
+literal_dir_escaped=${literal_dir_escaped%_}
+{
+  printf '%s\n' 'DEV_EXEC_HOST=test-host'
+  printf "DEV_EXEC_DIR='%s'\n" "$literal_dir_escaped"
+  printf '%s\n' "DEV_EXEC_SHELL='/bin/sh'"
+} > "$literal_project/.dev-exec.env"
+PATH="$fake_bin:$PATH" \
+FAKE_SSH_MARKER="$ssh_marker" \
+FAKE_SSH_EXEC=1 \
+DEV_EXEC_LOG_DIR="$test_root/literal-logs" \
+  sh -c "cd '$literal_project' && '$wrapper' summary -- pwd" \
+  > "$doctor_output" 2> "$doctor_error"
+grep -Fq "$literal_authoritative" "$doctor_output"
 ! grep -Fq 'test-host' "$doctor_output"
 ! grep -Fq '/authoritative/project' "$doctor_output"
 ! grep -Fq 'test-session' "$doctor_output"
@@ -336,12 +355,19 @@ DEV_EXEC_DIR=/authoritative/project
 DEV_EXEC_SHELL=/bin/sh
 EOF
 
-PATH="$fake_bin:$PATH" \
-FAKE_SSH_MARKER="$ssh_marker" \
-FAKE_SSH_STATUS=0 \
-  sh -c "cd '$noisy_project' && '$wrapper' doctor" > "$doctor_output" 2> "$doctor_error"
+status=0
+if PATH="$fake_bin:$PATH" \
+  FAKE_SSH_MARKER="$ssh_marker" \
+  FAKE_SSH_STATUS=0 \
+    sh -c "cd '$noisy_project' && '$wrapper' doctor" > "$doctor_output" 2> "$doctor_error"; then
+  status=0
+else
+  status=$?
+fi
+[ "$status" -eq 64 ]
 ! grep -Fq 'private-config' "$doctor_output"
 ! grep -Fq 'private-config' "$doctor_error"
+grep -Fqx 'dev-exec doctor: configuration: invalid or unsafe' "$doctor_error"
 
 invalid_project=$test_root/private-project
 mkdir -p "$invalid_project"
@@ -357,7 +383,7 @@ else
   status=$?
 fi
 [ "$status" -eq 64 ]
-grep -Fqx 'dev-exec doctor: configuration: invalid' "$doctor_error"
+grep -Fqx 'dev-exec doctor: configuration: invalid or unsafe' "$doctor_error"
 ! grep -Fq "$invalid_project" "$doctor_error"
 ! grep -Fq 'private-host' "$doctor_error"
 
@@ -377,8 +403,41 @@ else
   status=$?
 fi
 [ "$status" -eq 64 ]
-grep -Fqx 'dev-exec: DEV_EXEC_HOST must not contain a newline' "$doctor_error"
+grep -Fqx 'dev-exec doctor: configuration: invalid or unsafe' "$doctor_error"
 ! grep -Fq 'private-host' "$doctor_error"
+
+tracked_project=$test_root/tracked-project
+mkdir -p "$tracked_project"
+git init -q "$tracked_project"
+cat > "$tracked_project/.dev-exec.env" <<'EOF'
+DEV_EXEC_HOST=test-host
+DEV_EXEC_DIR=/authoritative/project
+EOF
+git -C "$tracked_project" add .dev-exec.env
+rm -f "$ssh_marker"
+status=0
+if PATH="$fake_bin:$PATH" FAKE_SSH_MARKER="$ssh_marker" \
+    sh -c "cd '$tracked_project' && '$wrapper' doctor" > "$doctor_output" 2> "$doctor_error"; then
+  status=0
+else
+  status=$?
+fi
+[ "$status" -eq 64 ]
+grep -Fqx 'dev-exec doctor: configuration: invalid or unsafe' "$doctor_error"
+[ ! -e "$ssh_marker" ]
+
+symlink_project=$test_root/symlink-project
+mkdir -p "$symlink_project"
+ln -s "$no_sync_project/.dev-exec.env" "$symlink_project/.dev-exec.env"
+status=0
+if PATH="$fake_bin:$PATH" \
+    sh -c "cd '$symlink_project' && '$wrapper' doctor" > "$doctor_output" 2> "$doctor_error"; then
+  status=0
+else
+  status=$?
+fi
+[ "$status" -eq 64 ]
+grep -Fqx 'dev-exec doctor: configuration: invalid or unsafe' "$doctor_error"
 
 summary_authoritative=$test_root/summary-authoritative
 summary_project=$test_root/summary-project
@@ -489,14 +548,64 @@ DEV_EXEC_HOST=test-host
 DEV_EXEC_DIR=$summary_authoritative
 DEV_EXEC_SHELL=/bin/sh
 EOF
+status=0
+if PATH="$fake_bin:$PATH" \
+  FAKE_SSH_MARKER="$ssh_marker" \
+  FAKE_SSH_EXEC=1 \
+  DEV_EXEC_LOG_DIR="$summary_logs" \
+    sh -c "cd '$noisy_summary_project' && '$wrapper' summary -- true" \
+    > "$summary_output" 2> "$summary_error"; then
+  status=0
+else
+  status=$?
+fi
+[ "$status" -eq 64 ]
+! grep -Fq 'summary-private-config' "$summary_output"
+! grep -Fq 'summary-private-config' "$summary_error"
+grep -Fqx 'dev-exec: configuration is invalid or unsafe; command not started' "$summary_error"
+
+control_command="printf 'safe\\033]52;c;injected\\007text\\rhidden\\n'"
 PATH="$fake_bin:$PATH" \
 FAKE_SSH_MARKER="$ssh_marker" \
 FAKE_SSH_EXEC=1 \
 DEV_EXEC_LOG_DIR="$summary_logs" \
-  sh -c "cd '$noisy_summary_project' && '$wrapper' summary -- true" \
+CONTROL_COMMAND="$control_command" \
+  sh -c "cd '$summary_project' && '$wrapper' summary \"\$CONTROL_COMMAND\"" \
   > "$summary_output" 2> "$summary_error"
-! grep -Fq 'summary-private-config' "$summary_output"
-! grep -Fq 'summary-private-config' "$summary_error"
+grep -Fq 'safe?]52;c;injected?text?hidden' "$summary_output"
+display_escape_count=$(LC_ALL=C tr -cd '\033' < "$summary_output" | wc -c | tr -d '[:space:]')
+[ "$display_escape_count" -eq 0 ]
+
+bounded_logs=$test_root/bounded-logs
+bounded_command='i=1; while [ "$i" -le 500 ]; do printf "bounded-%04d-xxxxxxxxxxxxxxxx\n" "$i"; i=$((i + 1)); done'
+PATH="$fake_bin:$PATH" \
+FAKE_SSH_MARKER="$ssh_marker" \
+FAKE_SSH_EXEC=1 \
+DEV_EXEC_LOG_DIR="$bounded_logs" \
+DEV_EXEC_LOG_MAX_KIB=1 \
+BOUNDED_COMMAND="$bounded_command" \
+  sh -c "cd '$summary_project' && '$wrapper' summary \"\$BOUNDED_COMMAND\"" \
+  > "$summary_output" 2> "$summary_error"
+bounded_run_id=$(sed -n 's/^dev-exec result: run=\([^ ]*\).*/\1/p' "$summary_output")
+[ "$(wc -c < "$bounded_logs/$bounded_run_id/stdout.log" | tr -d '[:space:]')" -le 1024 ]
+grep -Fq 'bounded-0500' "$bounded_logs/$bounded_run_id/stdout.log"
+grep -Fqx 'stdout_truncated: yes' "$bounded_logs/$bounded_run_id/meta"
+grep -Fq 'stdout=1024B+' "$summary_output"
+
+retention_logs=$test_root/retention-logs
+retention_iteration=1
+while [ "$retention_iteration" -le 3 ]; do
+  PATH="$fake_bin:$PATH" \
+  FAKE_SSH_MARKER="$ssh_marker" \
+  FAKE_SSH_EXEC=1 \
+  DEV_EXEC_LOG_DIR="$retention_logs" \
+  DEV_EXEC_LOG_MAX_RUNS=2 \
+    sh -c "cd '$summary_project' && '$wrapper' summary -- printf retained-$retention_iteration" \
+    >/dev/null 2>/dev/null
+  retention_iteration=$((retention_iteration + 1))
+done
+retained_run_count=$(find "$retention_logs" -mindepth 1 -maxdepth 1 -type d -name 'run.*' | wc -l | tr -d '[:space:]')
+[ "$retained_run_count" -eq 2 ]
 
 status=0
 if DEV_EXEC_LOG_DIR="$summary_logs" \

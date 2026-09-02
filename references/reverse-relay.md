@@ -72,7 +72,8 @@ ssh dev-vm true
 Then run on the Mac:
 
 ```sh
-~/code/remote-dev-execution/scripts/dev-relay setup dev-vm --client claude
+~/code/remote-dev-execution/scripts/dev-relay setup dev-vm \
+  --client claude --ref FULL_COMMIT_SHA
 ```
 
 Replace `dev-vm` with the Mac's trusted VM SSH alias. On first use, `setup` creates the local relay configuration with loopback-only high-port defaults. It then:
@@ -90,6 +91,7 @@ To generate a project configuration in the same operation, provide both checkout
 ```sh
 ~/code/remote-dev-execution/scripts/dev-relay setup dev-vm \
   --client claude \
+  --ref FULL_COMMIT_SHA \
   --project /absolute/path/to/project/on/the/vm \
            /absolute/path/to/project/on/the/mac \
   --shell /bin/zsh
@@ -127,10 +129,12 @@ Then execute from the VM project:
 Run a project test only after doctor reports delegated execution ready and source freshness is confirmed. If the relay already exists but the VM Agent cannot find the Skill, install only the missing Skill and restart the Agent:
 
 ```sh
-~/code/remote-dev-execution/scripts/dev-relay install-skill --client claude
+~/code/remote-dev-execution/scripts/dev-relay install-skill \
+  --client claude --ref FULL_COMMIT_SHA
 ```
 
-Use `--client codex` or `--client both` as appropriate. Add `--repo` and `--ref` when installing from an internal repository or pinning a reviewed release.
+Use `--client codex` or `--client both` as appropriate. A full reviewed commit
+ID is always required through `--ref`; add `--repo` for an internal repository.
 
 Relay setup establishes execution connectivity; it does not synchronize project files. If the VM and Mac use separate checkouts, run the bundled project-aware Mutagen helper or configure another mechanism with a blocking completion check before trusting remote results. For an existing session, add it as `DEV_EXEC_MUTAGEN_SESSION` or pass `--mutagen SESSION` during relay setup; if the session is controlled elsewhere, also pass `--mutagen-host CONTROL_HOST`. `dev-exec` flushes the session, rejects disconnected endpoints, conflicts, and filesystem problems from structured state, and stops before SSH whenever freshness cannot be established. See [Mutagen Synchronization](mutagen.md).
 

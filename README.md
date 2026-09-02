@@ -74,6 +74,7 @@ Then run on the Mac from that canonical checkout:
 ```sh
 ~/code/remote-dev-execution/scripts/dev-relay setup VM_ALIAS \
   --client claude \
+  --ref FULL_COMMIT_SHA \
   --project /absolute/path/to/project/in/agent-environment \
             /absolute/path/to/project/in/authoritative-environment \
   --shell /bin/zsh
@@ -87,6 +88,7 @@ Then run on the Mac from that canonical checkout:
 | First `--project` value | Required when using `--project` | The absolute path to the checkout in the Agent environment. The directory must already exist. |
 | Second `--project` value | Required when using `--project` | The absolute path to the authoritative checkout where builds, tests, services, and debugging run. |
 | `--client CLIENT` | Optional, recommended on first setup | `claude`, `codex`, or `both`. It installs this Skill in the Agent environment. Restart that Agent after installation. |
+| `--ref COMMIT` | Required with `--client` | The reviewed full 40- or 64-hex commit ID to install. Branch names and tags are rejected because they can move. |
 | `--shell SHELL` | Optional | An executable shell in the authoritative environment, usually `/bin/zsh` or `/bin/sh`. Setup uses the current user's shell when available; `dev-exec` otherwise defaults to `/bin/sh`. |
 | `--mutagen SESSION` | Optional | The exact name of an existing Mutagen session. By default it is controlled where `dev-exec` runs; combine with `--mutagen-host` when the daemon/session is owned elsewhere. It requires `--project`. |
 | `--mutagen-host HOST` | Optional | SSH alias reachable from the Agent environment where the existing Mutagen daemon/session runs. It requires `--project` and `--mutagen`. |
@@ -142,9 +144,10 @@ checkout or another independently verified synchronization mechanism.
 | Skill is already installed; project mapping is being refreshed | Omit | Use only when this project uses Mutagen |
 | Claude and Codex both run in the Agent environment | `both` | Depends on checkout synchronization |
 
-For an internal Skill repository or pinned release, add `--repo REPOSITORY` and
-`--ref BRANCH_OR_TAG_OR_COMMIT`. During `setup`, these options require
-`--client`; the selected ref must already contain the version to install.
+When `--client` is present, add `--ref FULL_COMMIT_SHA`; add `--repo REPOSITORY`
+for an internal Skill repository. Resolve a reviewed release tag to its full
+commit ID before setup. The selected commit must already contain the version to
+install.
 
 The two project paths and the source-freshness strategy are the only required
 project choices. Setup does not guess them because a wrong guess can produce a
@@ -173,7 +176,8 @@ For an existing relay that installed only the wrapper, repair the missing VM
 Skill installation from the Mac, then restart the agent:
 
 ```sh
-~/code/remote-dev-execution/scripts/dev-relay install-skill --client claude
+~/code/remote-dev-execution/scripts/dev-relay install-skill \
+  --client claude --ref FULL_COMMIT_SHA
 ```
 
 See [Agent execution validation](references/agent-validation.md) for the full
@@ -269,14 +273,15 @@ git clone https://github.com/lajidonggua/remote-dev-execution.git \
 
 ~/code/remote-dev-execution/scripts/install-skill.sh \
   --repo https://github.com/lajidonggua/remote-dev-execution.git \
-  --ref main \
+  --ref FULL_COMMIT_SHA \
   --client claude
 ```
 
 Install both supported clients in the same user environment with:
 
 ```sh
-~/code/remote-dev-execution/scripts/install-skill.sh --client both
+~/code/remote-dev-execution/scripts/install-skill.sh \
+  --ref FULL_COMMIT_SHA --client both
 ```
 
 The default targets are `~/.claude/skills/remote-dev-execution` for Claude Code
@@ -286,10 +291,11 @@ same canonical checkout.
 The installer is idempotent and conservative:
 
 - It updates only a clean Git checkout whose `origin` matches `--repo`.
-- It can use a branch, tag, or commit (`--ref`).
+- It requires a full 40- or 64-hex commit ID (`--ref`).
 - It refuses an existing directory, broken link, or link to another location.
 - It never uses `sudo` and never overwrites unrelated user files.
-- `--no-update` uses an existing checkout without fetching.
+- `--no-update` uses an existing checkout without fetching only when its HEAD
+  equals `--ref`.
 - `--dry-run` previews the link actions.
 - `--root DIR` selects another canonical checkout; `--target DIR` selects a
   custom target for one client.
@@ -299,14 +305,13 @@ the agent reloads Skill metadata and instructions.
 
 ### Internal team rollout
 
-Use the team's authenticated private clone URL and pin a reviewed ref. A
-branch is convenient while the team is testing; a commit SHA or release tag is
-reproducible:
+Use the team's authenticated private clone URL and pin the reviewed full commit
+ID. Resolve a release tag to its commit before installation:
 
 ```sh
 ~/code/remote-dev-execution/scripts/install-skill.sh \
   --repo git@github.com:your-org/remote-dev-execution.git \
-  --ref team-stable \
+  --ref FULL_COMMIT_SHA \
   --client claude
 ```
 
@@ -450,9 +455,10 @@ For shell operators, pass one quoted command string:
   'npm test -- --runInBand'
 ```
 
-Summary mode changes to `DEV_EXEC_DIR`, starts `DEV_EXEC_SHELL -lc`, retains
-complete stdout/stderr separately in private caller-side logs, returns bounded
-excerpts and a run ID, and preserves the SSH status. Use
+Summary mode changes to `DEV_EXEC_DIR`, starts `DEV_EXEC_SHELL -lc`, retains at
+most 16 MiB from the end of each stream in private caller-side logs, returns
+bounded excerpts and a run ID, and preserves the SSH status. Truncated streams
+are marked in the result and metadata. Use
 `RUN_ID` exactly as printed by the summary when inspecting a failure:
 
 ```sh
@@ -461,9 +467,12 @@ excerpts and a run ID, and preserves the SSH status. Use
 ```
 
 The retained logs are private files in the Agent environment, not on the
-authoritative machine. Use `dev-exec stream -- COMMAND` only when unbounded
-live output is intentional; the legacy `dev-exec -- COMMAND` form remains a
-streaming alias.
+authoritative machine. Runs older than seven days are pruned, and at most 50
+runs are retained by default. Process-environment overrides
+`DEV_EXEC_LOG_MAX_KIB`, `DEV_EXEC_LOG_RETENTION_DAYS`, and
+`DEV_EXEC_LOG_MAX_RUNS` can lower or raise the documented bounded limits. Use
+`dev-exec stream -- COMMAND` only when unbounded live output is intentional;
+the legacy `dev-exec -- COMMAND` form remains a streaming alias.
 
 ## Mutagen: Optional, but Source Freshness Is Mandatory
 
@@ -609,6 +618,7 @@ Then run:
 ```sh
 ~/code/remote-dev-execution/scripts/dev-relay setup dev-vm \
   --client claude \
+  --ref FULL_COMMIT_SHA \
   --project /absolute/path/to/project/on/vm \
            /absolute/path/to/project/on/mac \
   --shell /bin/zsh
@@ -646,11 +656,13 @@ For a relay created by an earlier version, install only the missing Agent Skill
 without rebuilding the relay:
 
 ```sh
-~/code/remote-dev-execution/scripts/dev-relay install-skill --client claude
+~/code/remote-dev-execution/scripts/dev-relay install-skill \
+  --client claude --ref FULL_COMMIT_SHA
 ```
 
-Use `--repo` and `--ref` with either command for an internal repository or a
-reviewed release. Restart the Agent afterward so it discovers the Skill.
+Use `--repo` with either command for an internal repository. `--ref` is always
+required for Skill installation and must be the reviewed full commit ID.
+Restart the Agent afterward so it discovers the Skill.
 
 ### Start, inspect, and stop the relay
 
@@ -782,6 +794,7 @@ needed. The wrapper flushes and checks session health before every run.
 ssh dev-vm true
 ~/code/remote-dev-execution/scripts/dev-relay setup dev-vm \
   --client claude \
+  --ref FULL_COMMIT_SHA \
   --project /absolute/path/to/project/on/vm \
            /absolute/path/to/project/on/mac \
   --shell /bin/zsh
@@ -803,6 +816,7 @@ session and its control alias during relay setup:
 ```sh
 ~/code/remote-dev-execution/scripts/dev-relay setup VM_ALIAS \
   --client claude \
+  --ref FULL_COMMIT_SHA \
   --project /absolute/path/to/project/in/agent-environment \
            /absolute/path/to/project/in/authoritative-environment \
   --shell /bin/zsh \
@@ -867,12 +881,12 @@ process before public distribution.
 
 ## Update, Uninstall, and Release
 
-Update a clean checkout to a reviewed ref:
+Update a clean checkout to a reviewed full commit ID:
 
 ```sh
 ~/code/remote-dev-execution/scripts/install-skill.sh \
   --repo https://github.com/lajidonggua/remote-dev-execution.git \
-  --ref main \
+  --ref FULL_COMMIT_SHA \
   --client claude
 ```
 
@@ -880,10 +894,10 @@ To uninstall, verify that the user-level target is a symlink to the canonical
 checkout and remove only that link. Keep or remove the checkout separately.
 
 For public distribution, merge reviewed changes, wait for the `Validate`
-workflow, create an annotated tag such as `v0.1.0`, and have users install the
-tag instead of an unreviewed moving branch. Do not use `curl | sh`; clone the
-reviewed repository first so the installer and selected ref are visible before
-they run.
+workflow, create an annotated tag such as `v0.1.0`, resolve it to the full
+commit ID, and publish that ID to users. Do not use `curl | sh`; clone the
+reviewed repository first so the installer and selected commit are visible
+before they run.
 
 ## Validate Changes
 
