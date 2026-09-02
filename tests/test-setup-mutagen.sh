@@ -15,6 +15,26 @@ mutagen_state=$test_root/mutagen.state
 ssh_marker=$test_root/ssh.called
 mkdir -p "$fake_bin"
 
+cat > "$fake_bin/stat" <<'EOF'
+#!/bin/sh
+case $1:$2 in
+  -f:%u|-f:%Lp)
+    printf '%s\n' 'failed-bsd-probe-stdout'
+    exit 1
+    ;;
+  -c:%u)
+    id -u
+    ;;
+  -c:%a)
+    printf '%s\n' '600'
+    ;;
+  *)
+    exit 98
+    ;;
+esac
+EOF
+chmod 0755 "$fake_bin/stat"
+
 cat > "$fake_mutagen" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_MUTAGEN_LOG"

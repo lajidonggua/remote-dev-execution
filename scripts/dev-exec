@@ -36,6 +36,34 @@ fail() {
   exit 64
 }
 
+resolve_script_dir() {
+  rde_script_path=$0
+  case $rde_script_path in
+    /*) ;;
+    */*)
+      rde_script_parent=$(CDPATH= cd -P "$(dirname "$rde_script_path")" && pwd) || return 1
+      rde_script_path=$rde_script_parent/$(basename "$rde_script_path")
+      ;;
+    *)
+      rde_script_path=$(command -v "$rde_script_path" 2>/dev/null) || return 1
+      ;;
+  esac
+
+  while [ -L "$rde_script_path" ]; do
+    rde_link_target=$(readlink "$rde_script_path") || return 1
+    case $rde_link_target in
+      /*) rde_script_path=$rde_link_target ;;
+      *) rde_script_path=${rde_script_path%/*}/$rde_link_target ;;
+    esac
+  done
+
+  CDPATH= cd -P "$(dirname "$rde_script_path")" && pwd
+}
+
+script_dir=$(resolve_script_dir) || fail 'cannot locate the bundled scripts directory'
+[ -r "$script_dir/portable-stat.sh" ] || fail 'bundled portable stat helper is unavailable'
+. "$script_dir/portable-stat.sh" || fail 'cannot load the bundled portable stat helper'
+
 doctor_say() {
   printf 'dev-exec doctor: %s\n' "$*"
 }
@@ -175,9 +203,9 @@ config_is_tracked() {
 validate_config_file() {
   [ ! -L "$config_file" ] || return 1
   [ -f "$config_file" ] || return 1
-  config_owner=$(stat -f '%u' "$config_file" 2>/dev/null || stat -c '%u' "$config_file" 2>/dev/null) ||
+  config_owner=$(rde_stat owner "$config_file") ||
     return 1
-  config_mode=$(stat -f '%Lp' "$config_file" 2>/dev/null || stat -c '%a' "$config_file" 2>/dev/null) ||
+  config_mode=$(rde_stat mode "$config_file") ||
     return 1
   current_uid=$(id -u 2>/dev/null) || return 1
   [ "$config_owner" = "$current_uid" ] || return 1

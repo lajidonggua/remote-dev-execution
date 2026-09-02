@@ -40,10 +40,23 @@ project_script=$test_root/project-remote.sh
 ssh_script=$test_root/vm-ssh.sh
 trust_script=$test_root/vm-trust.sh
 wrapper_script=$test_root/vm-wrapper.sh
+helper_script=$test_root/vm-helper.sh
 extract_script '  project_remote_script=' "$project_script"
 extract_script '  remote_install_config=' "$ssh_script"
 extract_script '  remote_install_known_host=' "$trust_script"
 extract_script '  remote_install_wrapper=' "$wrapper_script"
+extract_script '  remote_install_stat_helper=' "$helper_script"
+
+test_home=$test_root/home
+HOME="$test_home" sh "$helper_script" < "$script_dir/scripts/portable-stat.sh"
+HOME="$test_home" sh "$wrapper_script" < "$script_dir/scripts/dev-exec"
+cmp -s "$script_dir/scripts/portable-stat.sh" \
+  "$test_home/.local/share/remote-dev-execution/portable-stat.sh"
+cmp -s "$script_dir/scripts/dev-exec" \
+  "$test_home/.local/share/remote-dev-execution/dev-exec"
+[ "$(readlink "$test_home/.local/bin/dev-exec")" = \
+  "$test_home/.local/share/remote-dev-execution/dev-exec" ]
+HOME="$test_home" "$test_home/.local/bin/dev-exec" --help >/dev/null
 
 project=$test_root/project
 mkdir -p "$project"

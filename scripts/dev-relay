@@ -1212,6 +1212,32 @@ rm -f "$entry_tmp"'
 }
 
 install_vm_wrapper() {
+  remote_install_stat_helper='set -eu
+umask 077
+managed_dir=$HOME/.local/share/remote-dev-execution
+helper=$managed_dir/portable-stat.sh
+if [ -L "$managed_dir" ]; then
+  printf "%s\n" "dev-relay: refusing to use a symlinked VM wrapper directory" >&2
+  exit 78
+fi
+mkdir -p "$managed_dir"
+if [ -L "$helper" ]; then
+  printf "%s\n" "dev-relay: refusing to replace an invalid VM stat helper path: $helper" >&2
+  exit 78
+fi
+if [ -e "$helper" ] && [ ! -f "$helper" ]; then
+  printf "%s\n" "dev-relay: refusing to replace an invalid VM stat helper path: $helper" >&2
+  exit 78
+fi
+helper_tmp=$helper.tmp.$$
+if [ -e "$helper_tmp" ] || [ -L "$helper_tmp" ]; then
+  printf "%s\n" "dev-relay: temporary VM stat helper path is occupied: $helper_tmp" >&2
+  exit 69
+fi
+cat > "$helper_tmp"
+chmod 0600 "$helper_tmp"
+mv "$helper_tmp" "$helper"'
+
   remote_install_wrapper='set -eu
 umask 077
 managed_dir=$HOME/.local/share/remote-dev-execution
@@ -1250,6 +1276,7 @@ else
   ln -s "$managed" "$link"
 fi'
 
+  outer_ssh_command "$remote_install_stat_helper" < "$script_dir/portable-stat.sh" || return 1
   outer_ssh_command "$remote_install_wrapper" < "$script_dir/dev-exec"
 }
 

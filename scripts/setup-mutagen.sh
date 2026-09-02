@@ -202,6 +202,10 @@ cleanup() {
 [ -n "${HOME:-}" ] || fail "$EX_CONFIG" 'HOME is required'
 script_dir=$(CDPATH= cd -P "$(dirname "$0")" && pwd) ||
   fail "$EX_UNAVAILABLE" 'cannot locate the bundled scripts directory'
+[ -r "$script_dir/portable-stat.sh" ] ||
+  fail "$EX_UNAVAILABLE" 'bundled portable stat helper is unavailable'
+. "$script_dir/portable-stat.sh" ||
+  fail "$EX_UNAVAILABLE" 'cannot load the bundled portable stat helper'
 
 install_requested=0
 install_version=${MUTAGEN_INSTALL_VERSION:-0.18.1}
@@ -270,9 +274,9 @@ config_file=$(find_config) ||
   fail "$EX_CONFIG" 'refusing to update a symlinked .dev-exec.env'
 [ -f "$config_file" ] ||
   fail "$EX_CONFIG" '.dev-exec.env is not a regular file'
-config_owner=$(stat -f '%u' "$config_file" 2>/dev/null || stat -c '%u' "$config_file" 2>/dev/null) ||
+config_owner=$(rde_stat owner "$config_file") ||
   fail "$EX_CONFIG" 'cannot inspect .dev-exec.env ownership'
-config_mode=$(stat -f '%Lp' "$config_file" 2>/dev/null || stat -c '%a' "$config_file" 2>/dev/null) ||
+config_mode=$(rde_stat mode "$config_file") ||
   fail "$EX_CONFIG" 'cannot inspect .dev-exec.env permissions'
 [ "$config_owner" = "$(id -u)" ] ||
   fail "$EX_CONFIG" '.dev-exec.env must be owned by the current user'

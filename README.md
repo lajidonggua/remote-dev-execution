@@ -905,15 +905,18 @@ Run the same checks used by CI:
 
 ```sh
 sh -n scripts/dev-exec scripts/dev-relay scripts/install-skill.sh \
+  scripts/portable-stat.sh \
   scripts/install-mutagen.sh scripts/setup-mutagen.sh \
   tests/test-dev-exec.sh tests/test-dev-relay.sh tests/test-install-skill.sh \
   tests/test-install-mutagen.sh tests/test-setup-mutagen.sh \
+  tests/test-portable-stat.sh \
   tests/test-relay-embedded.sh
 tests/test-dev-exec.sh
 tests/test-dev-relay.sh
 tests/test-install-skill.sh
 tests/test-install-mutagen.sh
 tests/test-setup-mutagen.sh
+tests/test-portable-stat.sh
 tests/test-relay-embedded.sh
 ```
 

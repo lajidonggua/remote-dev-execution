@@ -11,6 +11,26 @@ fake_bin=$test_root/bin
 project=$test_root/project/nested
 mkdir -p "$fake_bin" "$project"
 
+cat > "$fake_bin/stat" <<'EOF'
+#!/bin/sh
+case $1:$2 in
+  -f:%u|-f:%Lp)
+    printf '%s\n' 'failed-bsd-probe-stdout'
+    exit 1
+    ;;
+  -c:%u)
+    id -u
+    ;;
+  -c:%a)
+    printf '%s\n' '600'
+    ;;
+  *)
+    exit 98
+    ;;
+esac
+EOF
+chmod 0700 "$fake_bin/stat"
+
 cat > "$fake_bin/ssh" <<'EOF'
 #!/bin/sh
 printf 'ssh-called\n' > "$FAKE_SSH_MARKER"
